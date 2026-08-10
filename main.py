@@ -2,13 +2,12 @@
 天体引力模拟器
 
 主入口文件
-
-启动 PyQt6 桌面应用
 """
 
 import sys
 from PyQt6.QtWidgets import QApplication
-from ui import MainWindow
+from ui.main_window import MainWindow
+from ui.styles import apply_global_style
 
 
 def main():
@@ -17,6 +16,7 @@ def main():
     
     # 设置应用样式
     app.setStyle('Fusion')
+    apply_global_style(app)
     
     # 创建主窗口
     window = MainWindow()

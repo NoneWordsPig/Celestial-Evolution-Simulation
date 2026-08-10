@@ -19,6 +19,8 @@ Physics 物理引擎模块
 - SimulationFormatter / ScientificFormatter: 单位格式化器
 - UnitSystem: 模拟单位系统
 - UnitConverter: 现实单位转换器
+- ReferenceFrame: 质心参考系管理
+- TransitionManager: 过渡动画管理
 """
 
 from .body import Body
@@ -31,6 +33,15 @@ from .formatter import SimulationFormatter, ScientificFormatter
 from .units import UnitSystem, UnitConverter, DEFAULT_UNITS
 from .camera import Camera
 from .scale_bar import ScaleBar, compute_nice_number
+from .reference_frame import ReferenceFrame
+from .transitions import (
+    Transition,
+    CameraTransition,
+    MomentumCorrectionTransition,
+    TransitionManager,
+    ease_in_out_cubic,
+    lerp,
+)
 from .constants import (
     G, SOFTENING, DEFAULT_DT, MAX_TRAJECTORY_LENGTH,
     COLLISION_FACTOR, RADIUS_MERGE_EXPONENT,
@@ -61,6 +72,14 @@ __all__ = [
     'Camera',
     'ScaleBar',
     'compute_nice_number',
+    # 参考系和过渡
+    'ReferenceFrame',
+    'Transition',
+    'CameraTransition',
+    'MomentumCorrectionTransition',
+    'TransitionManager',
+    'ease_in_out_cubic',
+    'lerp',
     # 物理常量
     'G',
     'SOFTENING',
