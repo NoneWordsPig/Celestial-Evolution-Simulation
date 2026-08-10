@@ -69,7 +69,10 @@ class SimulationWidget(QOpenGLWidget):
         # 选中的天体索引
         self._selected_body_index = -1
         
-        # 星空背景
+        # 星空背景配置
+        self.background_star_density = 60  # 星星数量（减少）
+        self.background_star_brightness = 0.3  # 最大亮度（降低）
+        self.background_star_size = 0.8  # 最大尺寸（减小）
         self._stars = []
         self._init_stars()
         
@@ -82,14 +85,16 @@ class SimulationWidget(QOpenGLWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     
     def _init_stars(self):
-        """初始化星空背景"""
+        """初始化星空背景 - 优化的低调星空"""
         self._stars = []
-        for _ in range(200):
-            # 随机位置和亮度
+        for _ in range(self.background_star_density):
+            # 随机位置
             x = random.random()
             y = random.random()
-            brightness = random.uniform(0.2, 0.8)
-            size = random.uniform(0.5, 2.0)
+            # 降低亮度范围：0.05 到 background_star_brightness
+            brightness = random.uniform(0.05, self.background_star_brightness)
+            # 减小尺寸范围：0.3 到 background_star_size
+            size = random.uniform(0.3, self.background_star_size)
             self._stars.append((x, y, brightness, size))
     
     def set_mode(self, mode: Mode, unit_system: UnitSystem = None, converter: UnitConverter = None):
@@ -101,6 +106,44 @@ class SimulationWidget(QOpenGLWidget):
             self.converter = converter
         self.update()
     
+
+    def set_background_star_density(self, density: int):
+        """设置背景星星密度"""
+        self.background_star_density = max(10, min(200, density))
+        self._init_stars()
+        self.update()
+    
+    def set_background_star_brightness(self, brightness: float):
+        """设置背景星星亮度"""
+        self.background_star_brightness = max(0.05, min(0.5, brightness))
+        self._init_stars()
+        self.update()
+    
+    def set_background_star_size(self, size: float):
+        """设置背景星星尺寸"""
+        self.background_star_size = max(0.3, min(1.5, size))
+        self._init_stars()
+        self.update()
+
+
+    def set_background_star_density(self, density: int):
+        """设置背景星星密度"""
+        self.background_star_density = max(10, min(200, density))
+        self._init_stars()
+        self.update()
+    
+    def set_background_star_brightness(self, brightness: float):
+        """设置背景星星亮度"""
+        self.background_star_brightness = max(0.05, min(0.5, brightness))
+        self._init_stars()
+        self.update()
+    
+    def set_background_star_size(self, size: float):
+        """设置背景星星尺寸"""
+        self.background_star_size = max(0.3, min(1.5, size))
+        self._init_stars()
+        self.update()
+
     def start_animation(self):
         """启动动画"""
         interval = int(1000 / self._target_fps)
@@ -160,21 +203,21 @@ class SimulationWidget(QOpenGLWidget):
         self._draw_overlay()
     
     def _draw_starfield(self):
-        """绘制星空背景"""
-        w = self.camera.viewport_width
-        h = self.camera.viewport_height
+        """绘制星空背景 - 优化的低调星空"""
+        if not self._stars:
+            return
         
+        # 批量绘制所有星星（性能优化）
+        gl.glBegin(gl.GL_POINTS)
         for x, y, brightness, size in self._stars:
             # 转换为 NDC
             ndc_x = x * 2.0 - 1.0
             ndc_y = 1.0 - y * 2.0
             
-            # 绘制星点
+            # 设置颜色和尺寸
             gl.glColor4f(1.0, 1.0, 1.0, brightness)
-            gl.glPointSize(size)
-            gl.glBegin(gl.GL_POINTS)
             gl.glVertex2f(ndc_x, ndc_y)
-            gl.glEnd()
+        gl.glEnd()
     
     def _draw_bodies(self):
         """绘制所有天体"""
