@@ -7,7 +7,7 @@ Add Body Dialog
 
 import numpy as np
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QFormLayout, QLineEdit, QDoubleSpinBox,
+    QDialog, QVBoxLayout, QFormLayout, QLineEdit,
     QPushButton, QHBoxLayout, QColorDialog, QLabel, QGroupBox,
     QRadioButton, QButtonGroup, QStackedWidget, QWidget
 )
@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 
 from physics import Body, Mode, UnitSystem, UnitConverter
+from .scientific_number_input import ScientificNumberInput
 
 
 class AddBodyDialog(QDialog):
@@ -60,34 +61,32 @@ class AddBodyDialog(QDialog):
         basic_layout.addRow("名称:", self.name_edit)
         
         # 质量
-        self.mass_spin = QDoubleSpinBox()
-        self.mass_spin.setRange(0.001, 1e12)
-        self.mass_spin.setDecimals(3)
-        self.mass_spin.setValue(1.0)
-        
         if self.mode == Mode.SIMULATION:
-            self.mass_spin.setSuffix(" MU")
+            mass_unit = " MU"
         else:
             if self.converter:
-                self.mass_spin.setSuffix(f" {self.converter.real_mass_unit}")
+                mass_unit = f" {self.converter.real_mass_unit}"
             else:
-                self.mass_spin.setSuffix(" MU")
+                mass_unit = " MU"
+
+        self.mass_spin = ScientificNumberInput(
+            value=1.0, min_value=1e-30, max_value=1e38, suffix=mass_unit
+        )
         
         basic_layout.addRow("质量:", self.mass_spin)
         
         # 半径
-        self.radius_spin = QDoubleSpinBox()
-        self.radius_spin.setRange(0.01, 1e6)
-        self.radius_spin.setDecimals(2)
-        self.radius_spin.setValue(0.1)
-        
         if self.mode == Mode.SIMULATION:
-            self.radius_spin.setSuffix(" DU")
+            radius_unit = " DU"
         else:
             if self.converter:
-                self.radius_spin.setSuffix(f" {self.converter.real_distance_unit}")
+                radius_unit = f" {self.converter.real_distance_unit}"
             else:
-                self.radius_spin.setSuffix(" DU")
+                radius_unit = " DU"
+
+        self.radius_spin = ScientificNumberInput(
+            value=0.1, min_value=1e-30, max_value=1e12, suffix=radius_unit
+        )
         
         basic_layout.addRow("半径:", self.radius_spin)
         
@@ -98,16 +97,6 @@ class AddBodyDialog(QDialog):
         pos_group = QGroupBox("位置")
         pos_layout = QFormLayout()
         
-        self.pos_x_spin = QDoubleSpinBox()
-        self.pos_x_spin.setRange(-1e9, 1e9)
-        self.pos_x_spin.setDecimals(6)
-        self.pos_x_spin.setValue(10.0)
-        
-        self.pos_y_spin = QDoubleSpinBox()
-        self.pos_y_spin.setRange(-1e9, 1e9)
-        self.pos_y_spin.setDecimals(6)
-        self.pos_y_spin.setValue(0.0)
-        
         if self.mode == Mode.SIMULATION:
             unit = " DU"
         else:
@@ -115,9 +104,13 @@ class AddBodyDialog(QDialog):
                 unit = f" {self.converter.real_distance_unit}"
             else:
                 unit = " DU"
-        
-        self.pos_x_spin.setSuffix(unit)
-        self.pos_y_spin.setSuffix(unit)
+
+        self.pos_x_spin = ScientificNumberInput(
+            value=10.0, min_value=-1e18, max_value=1e18, suffix=unit
+        )
+        self.pos_y_spin = ScientificNumberInput(
+            value=0.0, min_value=-1e18, max_value=1e18, suffix=unit
+        )
         
         pos_layout.addRow("X:", self.pos_x_spin)
         pos_layout.addRow("Y:", self.pos_y_spin)
@@ -158,16 +151,6 @@ class AddBodyDialog(QDialog):
         cartesian_page = QWidget()
         cartesian_layout = QFormLayout()
         
-        self.vx_spin = QDoubleSpinBox()
-        self.vx_spin.setRange(-1e6, 1e6)
-        self.vx_spin.setDecimals(6)
-        self.vx_spin.setValue(0.0)
-        
-        self.vy_spin = QDoubleSpinBox()
-        self.vy_spin.setRange(-1e6, 1e6)
-        self.vy_spin.setDecimals(6)
-        self.vy_spin.setValue(10.0)
-        
         if self.mode == Mode.SIMULATION:
             vel_unit = " DU/TU"
         else:
@@ -175,9 +158,13 @@ class AddBodyDialog(QDialog):
                 vel_unit = " km/s"
             else:
                 vel_unit = " DU/TU"
-        
-        self.vx_spin.setSuffix(vel_unit)
-        self.vy_spin.setSuffix(vel_unit)
+
+        self.vx_spin = ScientificNumberInput(
+            value=0.0, min_value=-1e12, max_value=1e12, suffix=vel_unit
+        )
+        self.vy_spin = ScientificNumberInput(
+            value=10.0, min_value=-1e12, max_value=1e12, suffix=vel_unit
+        )
         
         cartesian_layout.addRow("vx:", self.vx_spin)
         cartesian_layout.addRow("vy:", self.vy_spin)
@@ -189,18 +176,12 @@ class AddBodyDialog(QDialog):
         polar_page = QWidget()
         polar_layout = QFormLayout()
         
-        self.speed_spin = QDoubleSpinBox()
-        self.speed_spin.setRange(0.0, 1e6)
-        self.speed_spin.setDecimals(6)
-        self.speed_spin.setValue(10.0)
-        
-        self.direction_spin = QDoubleSpinBox()
-        self.direction_spin.setRange(-360.0, 360.0)
-        self.direction_spin.setDecimals(1)
-        self.direction_spin.setValue(90.0)
-        self.direction_spin.setSuffix("°")
-        
-        self.speed_spin.setSuffix(vel_unit)
+        self.speed_spin = ScientificNumberInput(
+            value=10.0, min_value=0.0, max_value=1e12, suffix=vel_unit
+        )
+        self.direction_spin = ScientificNumberInput(
+            value=90.0, min_value=-360.0, max_value=360.0, suffix="°"
+        )
         
         polar_layout.addRow("速率:", self.speed_spin)
         polar_layout.addRow("角度:", self.direction_spin)

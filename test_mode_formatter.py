@@ -346,8 +346,8 @@ class TestEngineQueryInterfaces(unittest.TestCase):
     def test_body_net_force(self):
         """计算天体净引力"""
         force = self.engine.body_net_force(1)
-        # With softening=5.0: F = G*M*m*r / (r^2+s^2)^1.5
-        # = 1000*1*10 / (100+25)^1.5 = 10000/1397.5 = 7.155
+        # With softening≈0（默认 ε=1e-8）: F ≈ G*M*m / r^2
+        # = 1000*1 / 100 = 10
         self.assertLess(force[0], 0)  # toward -x
         self.assertGreater(abs(force[0]), 5.0)  # reasonable magnitude
 

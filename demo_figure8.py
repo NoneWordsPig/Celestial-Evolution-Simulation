@@ -54,7 +54,7 @@ def setup_figure8_system(window):
         name="Body 1",
         mass=mass,
         physical_radius=0.02,
-        render_radius=0.15,
+        render_radius=0.1,
         position=(x1, y1),
         velocity=(vx1, vy1),
         color=(1.0, 0.3, 0.3)  # 红色
@@ -64,7 +64,7 @@ def setup_figure8_system(window):
         name="Body 2",
         mass=mass,
         physical_radius=0.02,
-        render_radius=0.15,
+        render_radius=0.1,
         position=(x2, y2),
         velocity=(vx2, vy2),
         color=(0.3, 1.0, 0.3)  # 绿色
@@ -74,7 +74,7 @@ def setup_figure8_system(window):
         name="Body 3",
         mass=mass,
         physical_radius=0.02,
-        render_radius=0.15,
+        render_radius=0.1,
         position=(x3, y3),
         velocity=(vx3, vy3),
         color=(0.3, 0.3, 1.0)  # 蓝色
