@@ -57,6 +57,9 @@ class GravitySolver:
         # 计算距离的平方（加软化因子）
         dist_sq = np.sum(diff ** 2, axis=2) + self.softening ** 2  # (N, N)
         
+        # 将对角线设为安全值（排除自身引力，避免 softening=0 时除零）
+        np.fill_diagonal(dist_sq, 1.0)
+        
         # 计算引力大小：F / (m_i * m_j) = G / dist_sq
         # 然后乘以方向向量 diff / dist
         # 综合：acceleration on i from j = G * m_j * diff[i,j] / dist_sq^(3/2)

@@ -243,3 +243,125 @@ class PhysicsEngine:
             天体数量
         """
         return len(self.bodies)
+    # ============================================================
+    # 只读查询接口（供 UI / Formatter 使用，不修改物理状态）
+    # ============================================================
+
+    def get_body_state(self, index: int) -> dict:
+        """
+        获取指定天体的状态快照（只读）
+
+        Args:
+            index: 天体索引
+
+        Returns:
+            包含 name, mass, position, velocity, physical_radius, render_radius 的字典
+            所有数值均为模拟单位
+        """
+        body = self.bodies[index]
+        return {
+            'name': body.name,
+            'mass': body.mass,
+            'position': body.position.copy(),
+            'velocity': body.velocity.copy(),
+            'physical_radius': body.physical_radius,
+            'render_radius': body.render_radius,
+            'color': body.color.copy(),
+        }
+
+    def body_acceleration(self, index: int) -> np.ndarray:
+        """
+        计算指定天体当前受到的引力加速度（只读）
+
+        不修改物理状态，仅计算当前时刻的加速度。
+
+        Args:
+            index: 天体索引
+
+        Returns:
+            加速度向量 (ax, ay)（模拟单位）
+        """
+        if len(self.bodies) <= 1:
+            return np.zeros(2, dtype=np.float64)
+        return self.gravity_solver.compute_acceleration_single(self.bodies, index)
+
+    def body_net_force(self, index: int) -> np.ndarray:
+        """
+        计算指定天体当前受到的净引力（只读）
+
+        F = m * a
+
+        Args:
+            index: 天体索引
+
+        Returns:
+            力向量 (Fx, Fy)（模拟单位）
+        """
+        body = self.bodies[index]
+        return body.mass * self.body_acceleration(index)
+
+    def body_distances(self, index: int) -> np.ndarray:
+        """
+        计算指定天体到所有其他天体的距离（只读）
+
+        Args:
+            index: 天体索引
+
+        Returns:
+            距离数组，长度为 N-1（排除自身）
+        """
+        body = self.bodies[index]
+        distances = []
+        for j, other in enumerate(self.bodies):
+            if j != index:
+                distances.append(body.distance_to(other))
+        return np.array(distances, dtype=np.float64)
+
+    def body_kinetic_energy(self, index: int) -> float:
+        """
+        计算指定天体的动能（只读）
+
+        Args:
+            index: 天体索引
+
+        Returns:
+            动能（模拟单位）
+        """
+        return self.bodies[index].kinetic_energy()
+
+    def get_all_body_states(self) -> list:
+        """
+        获取所有天体的状态快照列表（只读）
+
+        Returns:
+            状态字典列表
+        """
+        return [self.get_body_state(i) for i in range(len(self.bodies))]
+
+    def snapshot(self) -> dict:
+        """
+        获取当前模拟状态的完整快照（只读）
+
+        用于模式切换前后验证物理状态一致性。
+
+        Returns:
+            包含所有物理状态的字典
+        """
+        return {
+            'simulation_time': self.simulation_time,
+            'dt': self.dt,
+            'time_scale': self.time_scale,
+            'body_count': len(self.bodies),
+            'bodies': [
+                {
+                    'name': b.name,
+                    'mass': b.mass,
+                    'position': b.position.copy(),
+                    'velocity': b.velocity.copy(),
+                    'physical_radius': b.physical_radius,
+                    'render_radius': b.render_radius,
+                }
+                for b in self.bodies
+            ],
+        }
+
