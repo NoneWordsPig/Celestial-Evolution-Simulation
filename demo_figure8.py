@@ -53,7 +53,7 @@ def setup_figure8_system(window):
     body1 = Body(
         name="Body 1",
         mass=mass,
-        physical_radius=0.15,
+        physical_radius=0.02,
         render_radius=0.15,
         position=(x1, y1),
         velocity=(vx1, vy1),
@@ -63,7 +63,7 @@ def setup_figure8_system(window):
     body2 = Body(
         name="Body 2",
         mass=mass,
-        physical_radius=0.15,
+        physical_radius=0.02,
         render_radius=0.15,
         position=(x2, y2),
         velocity=(vx2, vy2),
@@ -73,7 +73,7 @@ def setup_figure8_system(window):
     body3 = Body(
         name="Body 3",
         mass=mass,
-        physical_radius=0.15,
+        physical_radius=0.02,
         render_radius=0.15,
         position=(x3, y3),
         velocity=(vx3, vy3),
@@ -96,7 +96,7 @@ def setup_figure8_system(window):
     window.follow_com_action.setChecked(True)
     
     # 设置时间步长和缩放
-    window.engine.dt = 0.001  # 小步长保证精度
+    window.engine.dt = 0.0005  # 更小的时间步长保证长期稳定性
     window.engine.time_scale = 1.0
     
     # 刷新UI

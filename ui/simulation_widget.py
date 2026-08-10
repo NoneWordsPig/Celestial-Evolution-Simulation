@@ -145,21 +145,26 @@ class SimulationWidget(QOpenGLWidget):
         # 世界坐标 -> 屏幕坐标
         sx, sy = self.camera.world_to_screen(body.position[0], body.position[1])
         
-        # 计算屏幕半径（使用统一的缩放，确保正圆）
+        # 计算屏幕半径
         render_radius_world = body.render_radius
         screen_radius = render_radius_world * self.camera.zoom
         screen_radius = max(screen_radius, self.min_render_radius_px)
         
-        # 转换为 NDC（使用最小维度确保正圆）
+        # 转换为 NDC
         w = self.camera.viewport_width
         h = self.camera.viewport_height
-        min_dim = min(w, h)
         
         ndc_x = (sx / w) * 2.0 - 1.0
         ndc_y = 1.0 - (sy / h) * 2.0
-        ndc_r = screen_radius / min_dim * 2.0
         
-        # 绘制圆形
+        # 关键修复：使用不同的 x/y 半径来补偿宽高比
+        # NDC 中 x 范围 [-1, 1] 对应宽度 w 像素
+        # NDC 中 y 范围 [-1, 1] 对应高度 h 像素
+        # 所以 screen_radius 像素在 NDC 中需要不同的 x/y 半径
+        ndc_rx = screen_radius / w * 2.0  # x 方向的 NDC 半径
+        ndc_ry = screen_radius / h * 2.0  # y 方向的 NDC 半径
+        
+        # 绘制圆形（在 NDC 中是椭圆，但在屏幕上是正圆）
         color = body.color
         gl.glColor4f(color[0], color[1], color[2], 1.0)
         
@@ -169,8 +174,8 @@ class SimulationWidget(QOpenGLWidget):
         for j in range(segments + 1):
             angle = 2.0 * np.pi * j / segments
             gl.glVertex2f(
-                ndc_x + ndc_r * np.cos(angle),
-                ndc_y + ndc_r * np.sin(angle)
+                ndc_x + ndc_rx * np.cos(angle),
+                ndc_y + ndc_ry * np.sin(angle)
             )
         gl.glEnd()
         
@@ -180,8 +185,8 @@ class SimulationWidget(QOpenGLWidget):
         for j in range(segments):
             angle = 2.0 * np.pi * j / segments
             gl.glVertex2f(
-                ndc_x + ndc_r * np.cos(angle),
-                ndc_y + ndc_r * np.sin(angle)
+                ndc_x + ndc_rx * np.cos(angle),
+                ndc_y + ndc_ry * np.sin(angle)
             )
         gl.glEnd()
     

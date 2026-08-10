@@ -163,11 +163,12 @@ class MainWindow(QMainWindow):
         
         self.main_splitter.addWidget(self.right_panel)
         
-        # 设置分割比例：左侧 200px，中间最大化，右侧 250px
-        self.main_splitter.setSizes([200, 900, 250])
-        self.main_splitter.setStretchFactor(0, 0)
-        self.main_splitter.setStretchFactor(1, 1)  # 中间可拉伸
-        self.main_splitter.setStretchFactor(2, 0)
+        # 设置分割比例：最大化模拟区域
+        # 左侧 150px，中间最大化，右侧 200px
+        self.main_splitter.setSizes([150, 1050, 200])
+        self.main_splitter.setStretchFactor(0, 0)  # 左侧固定
+        self.main_splitter.setStretchFactor(1, 1)  # 中间可拉伸（模拟区域）
+        self.main_splitter.setStretchFactor(2, 0)  # 右侧固定
         
         main_layout.addWidget(self.main_splitter)
         
