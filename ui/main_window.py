@@ -5,12 +5,16 @@
 集成质心参考系和过渡动画
 """
 
+import json
 import sys
+from pathlib import Path
+
 import numpy as np
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QMenuBar, QMenu, QStatusBar, QLabel,
-    QMessageBox, QToolBar, QPushButton, QFrame, QApplication
+    QMessageBox, QToolBar, QPushButton, QFrame, QApplication,
+    QFileDialog, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
@@ -26,6 +30,7 @@ from .inspector_widget import InspectorWidget
 from .control_panel import ControlPanel
 from .add_body_dialog import AddBodyDialog
 from .styles import apply_global_style, apply_button_style, PANEL_STYLE
+from physics.scene_manager import SceneManager
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +60,9 @@ class MainWindow(QMainWindow):
         self.mode = Mode.SIMULATION
         self.unit_system = UnitSystem()
         self.converter = None
+
+        # 场景管理器（JSON 读写，不参与物理计算）
+        self.scene_manager = SceneManager()
         
         # 跟随质心标志（默认关闭）
         self.follow_com = False
@@ -244,6 +252,32 @@ class MainWindow(QMainWindow):
         self.sci_mode_action.setChecked(False)
         self.sci_mode_action.triggered.connect(lambda: self._set_mode(Mode.SCIENTIFIC))
         mode_menu.addAction(self.sci_mode_action)
+
+        # 场景菜单
+        self.scene_menu = menubar.addMenu("场景(&C)")
+
+        load_action = QAction("加载场景(&L)", self)
+        load_action.triggered.connect(self._on_load_scene)
+        self.scene_menu.addAction(load_action)
+
+        save_action = QAction("保存场景(&S)", self)
+        save_action.triggered.connect(self._on_save_scene)
+        self.scene_menu.addAction(save_action)
+
+        self.scene_menu.addSeparator()
+
+        import_action = QAction("导入场景(&I)", self)
+        import_action.triggered.connect(self._on_import_scene)
+        self.scene_menu.addAction(import_action)
+
+        export_action = QAction("导出场景(&E)", self)
+        export_action.triggered.connect(self._on_export_scene)
+        self.scene_menu.addAction(export_action)
+
+        # 动态场景列表（启动时自动扫描 scenes/ 目录）
+        self._scene_scan_actions = []
+        self._scene_separator = None
+        self._refresh_scene_menu()
         
         # 帮助菜单
         help_menu = menubar.addMenu("帮助(&H)")
@@ -404,6 +438,92 @@ class MainWindow(QMainWindow):
             body = dialog.get_body()
             self.engine.add_body(body)
             self.body_list.refresh()
+
+    def _on_load_scene(self):
+        """加载场景：读取 JSON 并恢复到引擎/相机"""
+        default_dir = str(self.scene_manager.scenes_directory)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "加载场景", default_dir, "Scene JSON (*.json)"
+        )
+        if path:
+            self._load_scene_from_path(path)
+
+    def _on_import_scene(self):
+        """导入场景：从任意路径读取 JSON 并应用到当前模拟"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入场景", "", "Scene JSON (*.json)"
+        )
+        if path:
+            self._load_scene_from_path(path)
+
+    def _on_save_scene(self):
+        """保存场景：当前状态写入 scenes/<名称>.json"""
+        name, ok = QInputDialog.getText(self, "保存场景", "场景名称:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        path = self.scene_manager.scenes_directory / f"{name}.json"
+        self.scene_manager.export_scene(
+            self.engine, self.camera, path, name=name
+        )
+        self._refresh_scene_menu()
+        self.statusBar().showMessage(f"场景已保存: {path}")
+
+    def _on_export_scene(self):
+        """导出场景：当前状态写入指定 JSON 文件"""
+        default_file = str(self.scene_manager.scenes_directory / "scene.json")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出场景", default_file, "Scene JSON (*.json)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith('.json'):
+            path += '.json'
+        name = Path(path).stem
+        self.scene_manager.export_scene(
+            self.engine, self.camera, path, name=name
+        )
+        self._refresh_scene_menu()
+        self.statusBar().showMessage(f"场景已导出: {path}")
+
+    def _load_scene_from_path(self, path):
+        """应用场景文件到引擎/相机"""
+        try:
+            scene = self.scene_manager.import_scene(
+                path, self.engine, self.camera
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "加载场景失败", str(exc))
+            return
+        self.body_list.refresh()
+        self.inspector.select_body(-1)
+        self.inspector.refresh()
+        self.sim_widget.update()
+        self.statusBar().showMessage(f"已加载场景: {scene.get('name', path)}")
+
+    def _refresh_scene_menu(self):
+        """扫描 scenes/ 目录并刷新动态场景列表"""
+        if self._scene_separator is not None:
+            self.scene_menu.removeAction(self._scene_separator)
+            self._scene_separator = None
+        for action in self._scene_scan_actions:
+            self.scene_menu.removeAction(action)
+        self._scene_scan_actions.clear()
+
+        scenes = self.scene_manager.scan_scenes()
+        if not scenes:
+            return
+
+        self._scene_separator = self.scene_menu.addSeparator()
+        for info in scenes:
+            action = QAction(info['name'], self)
+            if info.get('description'):
+                action.setToolTip(info['description'])
+            action.triggered.connect(
+                lambda checked, p=info['path']: self._load_scene_from_path(p)
+            )
+            self.scene_menu.addAction(action)
+            self._scene_scan_actions.append(action)
     
     def _on_body_selected(self, index: int):
         """天体被选中"""

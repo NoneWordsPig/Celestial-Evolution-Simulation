@@ -1,0 +1,52 @@
+{
+  "format_version": 1,
+  "name": "Figure-8 三体系统",
+  "description": "经典 Figure-8 稳定周期轨道（Chenciner & Montgomery, 2000）。示例场景与用户场景使用完全相同的 JSON 格式。",
+  "units": {
+    "length": "DU",
+    "mass": "MU",
+    "time": "TU",
+    "velocity": "DU/TU"
+  },
+  "G": 1.0,
+  "integrator": "rk4",
+  "timestep": 0.0005,
+  "time_scale": 1.0,
+  "simulation_time": 0.0,
+  "camera": {
+    "center_x": 0.0,
+    "center_y": 0.0,
+    "zoom": 150.0,
+    "viewport_width": 1400,
+    "viewport_height": 900
+  },
+  "bodies": [
+    {
+      "name": "Body 1",
+      "mass": 1.0,
+      "radius": 0.02,
+      "render_radius": 0.1,
+      "position": [-0.97000436, 0.24308753],
+      "velocity": [0.46620368, 0.43236573],
+      "color": [1.0, 0.3, 0.3]
+    },
+    {
+      "name": "Body 2",
+      "mass": 1.0,
+      "radius": 0.02,
+      "render_radius": 0.1,
+      "position": [0.97000436, -0.24308753],
+      "velocity": [0.46620368, 0.43236573],
+      "color": [0.3, 1.0, 0.3]
+    },
+    {
+      "name": "Body 3",
+      "mass": 1.0,
+      "radius": 0.02,
+      "render_radius": 0.1,
+      "position": [0.0, 0.0],
+      "velocity": [-0.93240737, -0.86473146],
+      "color": [0.3, 0.3, 1.0]
+    }
+  ]
+}
