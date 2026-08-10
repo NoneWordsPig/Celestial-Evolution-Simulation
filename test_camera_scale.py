@@ -363,6 +363,26 @@ class TestScaleBar(unittest.TestCase):
         self.assertIn("DU", label)
         self.assertIn("未设置", label)
 
+    def test_scale_bar_label_below_1_du(self):
+        """缩放比例尺 <1 DU 时，标签显示正确数值（不出现 0 DU）"""
+        cam = Camera(viewport_width=800, viewport_height=600, zoom=300.0)
+        scale_bar = ScaleBar(target_pixel_length=150.0)
+
+        world_dist, pixel_len, label = scale_bar.compute(cam, Mode.SIMULATION)
+
+        self.assertAlmostEqual(world_dist, 0.5)
+        self.assertEqual(label, "0.5 DU")
+        self.assertNotIn("0 DU", label)
+
+    def test_scale_bar_label_tiny(self):
+        """深度放大时标签保留有效数字（0.1 / 0.01 DU）"""
+        for zoom, expected in [(1000.0, "0.1 DU"), (15000.0, "0.01 DU")]:
+            with self.subTest(zoom=zoom):
+                cam = Camera(viewport_width=800, viewport_height=600, zoom=zoom)
+                scale_bar = ScaleBar(target_pixel_length=150.0)
+                _, _, label = scale_bar.compute(cam, Mode.SIMULATION)
+                self.assertEqual(label, expected)
+
 
 class TestVisibleWorldBounds(unittest.TestCase):
     """测试可见世界范围"""

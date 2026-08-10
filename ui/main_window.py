@@ -56,8 +56,8 @@ class MainWindow(QMainWindow):
         self.unit_system = UnitSystem()
         self.converter = None
         
-        # 跟随质心标志
-        self.follow_com = True
+        # 跟随质心标志（默认关闭）
+        self.follow_com = False
         
         # 添加示例天体
         self._add_demo_bodies()

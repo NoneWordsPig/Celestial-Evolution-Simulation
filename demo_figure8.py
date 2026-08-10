@@ -90,10 +90,10 @@ def setup_figure8_system(window):
     window.camera.center_y = 0.0
     window.camera.zoom = 150.0  # 合适的缩放级别，可以看到完整轨道
     
-    # 启用跟随质心
-    window.follow_com = True
-    window.follow_com_btn.setChecked(True)
-    window.follow_com_action.setChecked(True)
+    # 跟随质心（默认关闭，与主程序一致）
+    window.follow_com = False
+    window.follow_com_btn.setChecked(False)
+    window.follow_com_action.setChecked(False)
     
     # 设置时间步长和缩放
     window.engine.dt = 0.0005  # 更小的时间步长保证长期稳定性

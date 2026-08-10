@@ -273,19 +273,7 @@ class SimulationWidget(QOpenGLWidget):
             )
         gl.glEnd()
         
-        # 3. 细边框（增加清晰度）
-        gl.glColor4f(1.0, 1.0, 1.0, 0.4)
-        gl.glLineWidth(1.0)
-        gl.glBegin(gl.GL_LINE_LOOP)
-        for j in range(segments):
-            angle = 2.0 * np.pi * j / segments
-            gl.glVertex2f(
-                ndc_x + ndc_rx * np.cos(angle),
-                ndc_y + ndc_ry * np.sin(angle)
-            )
-        gl.glEnd()
-        
-        # 4. 选中光环（保留）
+        # 3. 选中光环（保留，仅选中时显示）
         if index == self._selected_body_index:
             gl.glColor4f(1.0, 1.0, 1.0, 0.8)
             gl.glLineWidth(2.0)
@@ -316,12 +304,14 @@ class SimulationWidget(QOpenGLWidget):
         w = self.camera.viewport_width
         h = self.camera.viewport_height
         
-        # 绘制渐变轨迹
+        # 绘制渐变轨迹（颜色 = 星体对应颜色）
         for i in range(len(trail) - 1):
-            # 计算透明度（越老越透明）
-            alpha = 0.1 + 0.5 * (i / len(trail))
+            # 计算透明度（越新越亮，保证颜色清晰可见）
+            alpha = 0.15 + 0.65 * (i / len(trail))
             
-            gl.glColor4f(color[0], color[1], color[2], alpha)
+            gl.glColor4f(
+                float(color[0]), float(color[1]), float(color[2]), alpha
+            )
             gl.glLineWidth(1.5)
             
             # 转换为 NDC

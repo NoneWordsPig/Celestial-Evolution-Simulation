@@ -48,6 +48,20 @@ def compute_nice_number(value: float) -> float:
     return nice_fraction * (10 ** exponent)
 
 
+def _adaptive_decimal_precision(value: float) -> int:
+    """
+    根据数值量级自适应小数位数
+
+    当数值 < 1 时保留足够的小数位，避免固定 precision=0
+    把 0.5 DU / 0.1 DU 显示成 "0 DU"。
+    """
+    if value <= 0:
+        return 1
+    if value >= 1.0:
+        return 0
+    return max(1, -math.floor(math.log10(value)))
+
+
 class ScaleBar:
     """
     动态比例尺
@@ -124,19 +138,25 @@ class ScaleBar:
         
         # 生成标签
         if mode == Mode.SIMULATION:
-            # 模拟模式：显示 DU
+            # 模拟模式：显示 DU（小数位数随量级自适应，<1 DU 不丢精度）
             formatter = SimulationFormatter(unit_system)
-            label = formatter.format_distance(nice_world_distance, precision=0)
+            label = formatter.format_distance(
+                nice_world_distance,
+                precision=_adaptive_decimal_precision(nice_world_distance),
+            )
         else:
             # 科学模式
             if converter is not None:
-                # 有现实映射：转换为现实单位
+                # 有现实映射：转换为现实单位（科学计数法，无小数位问题）
                 formatter = ScientificFormatter(converter=converter)
                 real_distance = converter.sim_to_real_distance(nice_world_distance)
                 label = formatter.format_distance(real_distance, precision=2)
             else:
-                # 无映射：显示 DU + 提示
+                # 无映射：显示 DU + 提示（同样自适应小数位数）
                 formatter = ScientificFormatter()
-                label = formatter.format_distance(nice_world_distance, precision=0)
+                label = formatter.format_distance(
+                    nice_world_distance,
+                    precision=_adaptive_decimal_precision(nice_world_distance),
+                )
         
         return nice_world_distance, pixel_length, label

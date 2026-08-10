@@ -24,7 +24,7 @@
 操作说明（与 Figure-8 演示一致）：
 - 鼠标滚轮：缩放；鼠标中键拖拽：平移
 - 工具栏：播放控制、适应全部、重置摄像机
-- 跟随质心：默认开启，视图中心保持在系统质心
+- 跟随质心：默认关闭，可按需开启以保持视图中心在系统质心
 """
 
 import sys
@@ -105,10 +105,10 @@ def setup_solar_system(window, us: UnitSystem):
         )
         window.engine.add_body(planet)
 
-    # 视图：跟随质心，适应所有天体
-    window.follow_com = True
-    window.follow_com_btn.setChecked(True)
-    window.follow_com_action.setChecked(True)
+    # 视图：跟随质心默认关闭（与主程序一致），适应所有天体
+    window.follow_com = False
+    window.follow_com_btn.setChecked(False)
+    window.follow_com_action.setChecked(False)
     window.camera.center_x = 0.0
     window.camera.center_y = 0.0
     window._on_fit_all_bodies()
