@@ -1,7 +1,7 @@
 """
 主窗口
 
-重构后的主窗口，最大化模拟区域
+优化后的主窗口布局 - Simulation View 占据最大区域
 集成质心参考系和过渡动画
 """
 
@@ -32,11 +32,11 @@ class MainWindow(QMainWindow):
     """
     主窗口
     
-    重构后的布局：
-    - 顶部：工具栏
-    - 左侧：可折叠天体列表
-    - 中间：模拟视图（最大化）
-    - 右侧：可折叠检查器
+    优化布局：
+    - Simulation View 占据中央最大区域（>=75%）
+    - 左侧：可折叠天体列表（紧凑）
+    - 右侧：可折叠检查器（紧凑）
+    - 顶部：紧凑工具栏
     - 底部：状态栏
     """
     
@@ -114,9 +114,9 @@ class MainWindow(QMainWindow):
         self.engine.add_body(planet)
     
     def _setup_ui(self):
-        """设置 UI"""
+        """设置 UI - 优化布局"""
         self.setWindowTitle("天体引力模拟器")
-        self.setMinimumSize(1400, 900)
+        self.setMinimumSize(1200, 800)
         
         # 中心部件
         central = QWidget()
@@ -125,17 +125,16 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # 控制面板（顶部）
-        self.control_panel = ControlPanel(self.engine)
-        main_layout.addWidget(self.control_panel)
-        
-        # 主分割器
+        # 主分割器 - 水平布局
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # 左侧面板（天体列表）
+        # 左侧面板（天体列表）- 紧凑
         self.left_panel = QWidget()
+        self.left_panel.setMinimumWidth(100)
+        self.left_panel.setMaximumWidth(300)
         left_layout = QVBoxLayout(self.left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setContentsMargins(4, 4, 4, 4)
+        left_layout.setSpacing(4)
         
         self.body_list = BodyListWidget(
             self.engine, self.mode, self.unit_system, self.converter
@@ -144,17 +143,20 @@ class MainWindow(QMainWindow):
         
         self.main_splitter.addWidget(self.left_panel)
         
-        # 中间：模拟视图
+        # 中间：模拟视图 - 占据最大区域
         self.sim_widget = SimulationWidget(
             self.engine, self.camera,
             reference_frame=self.reference_frame
         )
         self.main_splitter.addWidget(self.sim_widget)
         
-        # 右侧面板（检查器）
+        # 右侧面板（检查器）- 紧凑
         self.right_panel = QWidget()
+        self.right_panel.setMinimumWidth(100)
+        self.right_panel.setMaximumWidth(350)
         right_layout = QVBoxLayout(self.right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setContentsMargins(4, 4, 4, 4)
+        right_layout.setSpacing(4)
         
         self.inspector = InspectorWidget(
             self.engine, self.mode, self.unit_system, self.converter
@@ -163,9 +165,9 @@ class MainWindow(QMainWindow):
         
         self.main_splitter.addWidget(self.right_panel)
         
-        # 设置分割比例：最大化模拟区域
-        # 左侧 150px，中间最大化，右侧 200px
-        self.main_splitter.setSizes([150, 1050, 200])
+        # 设置分割比例 - Simulation View 占据 >=75%
+        # 左侧 120px，中间最大化，右侧 180px
+        self.main_splitter.setSizes([120, 960, 180])
         self.main_splitter.setStretchFactor(0, 0)  # 左侧固定
         self.main_splitter.setStretchFactor(1, 1)  # 中间可拉伸（模拟区域）
         self.main_splitter.setStretchFactor(2, 0)  # 右侧固定
@@ -251,10 +253,29 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
     
     def _setup_toolbar(self):
-        """设置工具栏"""
+        """设置工具栏 - 紧凑设计"""
         toolbar = QToolBar()
         toolbar.setMovable(False)
+        toolbar.setIconSize(toolbar.iconSize())
         self.addToolBar(toolbar)
+        
+        # 播放控制
+        self.play_btn = QPushButton("▶")
+        apply_button_style(self.play_btn, 'primary')
+        self.play_btn.setFixedSize(36, 36)
+        self.play_btn.setToolTip("播放/暂停")
+        self.play_btn.setCheckable(True)
+        self.play_btn.clicked.connect(self._on_play_pause)
+        toolbar.addWidget(self.play_btn)
+        
+        self.step_btn = QPushButton("⏭")
+        apply_button_style(self.step_btn, 'toolbar')
+        self.step_btn.setFixedSize(36, 36)
+        self.step_btn.setToolTip("单步执行")
+        self.step_btn.clicked.connect(self._on_step)
+        toolbar.addWidget(self.step_btn)
+        
+        toolbar.addSeparator()
         
         # 添加天体
         self.add_btn = QPushButton("➕ 添加")
@@ -265,26 +286,34 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # 摄像机控制
-        self.reset_camera_btn = QPushButton("🎯 重置摄像机")
+        self.reset_camera_btn = QPushButton("🎯")
         apply_button_style(self.reset_camera_btn, 'toolbar')
+        self.reset_camera_btn.setFixedSize(36, 36)
+        self.reset_camera_btn.setToolTip("重置摄像机")
         self.reset_camera_btn.clicked.connect(self._on_reset_camera)
         toolbar.addWidget(self.reset_camera_btn)
         
-        self.fit_btn = QPushButton("🔍 适应全部")
+        self.fit_btn = QPushButton("🔍")
         apply_button_style(self.fit_btn, 'toolbar')
+        self.fit_btn.setFixedSize(36, 36)
+        self.fit_btn.setToolTip("适应全部")
         self.fit_btn.clicked.connect(self._on_fit_all_bodies)
         toolbar.addWidget(self.fit_btn)
         
         toolbar.addSeparator()
         
         # 参考系控制
-        self.reset_ref_btn = QPushButton("⚖️ 重置参考系")
+        self.reset_ref_btn = QPushButton("⚖️")
         apply_button_style(self.reset_ref_btn, 'toolbar')
+        self.reset_ref_btn.setFixedSize(36, 36)
+        self.reset_ref_btn.setToolTip("重置参考系")
         self.reset_ref_btn.clicked.connect(self._on_reset_reference_frame)
         toolbar.addWidget(self.reset_ref_btn)
         
-        self.follow_com_btn = QPushButton("📍 跟随质心")
+        self.follow_com_btn = QPushButton("📍")
         apply_button_style(self.follow_com_btn, 'toolbar')
+        self.follow_com_btn.setFixedSize(36, 36)
+        self.follow_com_btn.setToolTip("跟随质心")
         self.follow_com_btn.setCheckable(True)
         self.follow_com_btn.setChecked(self.follow_com)
         self.follow_com_btn.clicked.connect(self._toggle_follow_com)
@@ -292,11 +321,39 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
+        # 时间缩放
+        toolbar.addWidget(QLabel("速度:"))
+        self.time_scale_combo = self._create_time_scale_combo()
+        toolbar.addWidget(self.time_scale_combo)
+        
+        toolbar.addSeparator()
+        
         # 模式切换
-        self.mode_btn = QPushButton("🔬 科学模式")
+        self.mode_btn = QPushButton("🔬")
         apply_button_style(self.mode_btn, 'toolbar')
+        self.mode_btn.setFixedSize(36, 36)
+        self.mode_btn.setToolTip("切换科学模式")
         self.mode_btn.clicked.connect(self._toggle_mode)
         toolbar.addWidget(self.mode_btn)
+    
+    def _create_time_scale_combo(self):
+        """创建时间缩放下拉框"""
+        from PyQt6.QtWidgets import QComboBox
+        combo = QComboBox()
+        time_scales = [
+            ("0.1×", 0.1),
+            ("0.5×", 0.5),
+            ("1×", 1.0),
+            ("2×", 2.0),
+            ("5×", 5.0),
+            ("10×", 10.0),
+            ("100×", 100.0),
+        ]
+        for label, value in time_scales:
+            combo.addItem(label, value)
+        combo.setCurrentIndex(2)  # 默认 1×
+        combo.currentIndexChanged.connect(self._on_time_scale_changed)
+        return combo
     
     def _setup_statusbar(self):
         """设置状态栏"""
@@ -315,17 +372,30 @@ class MainWindow(QMainWindow):
     
     def _connect_signals(self):
         """连接信号"""
-        # 控制面板
-        self.control_panel.play_requested.connect(self.sim_widget.resume)
-        self.control_panel.pause_requested.connect(self.sim_widget.pause)
-        self.control_panel.step_requested.connect(self.sim_widget.step)
-        
         # 天体列表
         self.body_list.body_selected.connect(self._on_body_selected)
         self.body_list.body_delete_requested.connect(self._on_delete_body)
         
         # 模拟视图
         self.sim_widget.body_clicked.connect(self._on_body_clicked)
+    
+    def _on_play_pause(self):
+        """播放/暂停"""
+        if self.play_btn.isChecked():
+            self.play_btn.setText("⏸")
+            self.sim_widget.resume()
+        else:
+            self.play_btn.setText("▶")
+            self.sim_widget.pause()
+    
+    def _on_step(self):
+        """单步执行"""
+        self.sim_widget.step()
+    
+    def _on_time_scale_changed(self):
+        """时间缩放变化"""
+        value = self.time_scale_combo.currentData()
+        self.engine.time_scale = value
     
     def _on_add_body(self):
         """添加天体"""
@@ -413,9 +483,11 @@ class MainWindow(QMainWindow):
         
         # 更新按钮文本
         if mode == Mode.SIMULATION:
-            self.mode_btn.setText("🔬 科学模式")
+            self.mode_btn.setText("🔬")
+            self.mode_btn.setToolTip("切换科学模式")
         else:
-            self.mode_btn.setText("🎮 模拟模式")
+            self.mode_btn.setText("🎮")
+            self.mode_btn.setToolTip("切换模拟模式")
         
         # 更新组件
         self.body_list.set_mode(mode, self.unit_system, self.converter)

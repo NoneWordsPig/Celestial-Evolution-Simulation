@@ -3,12 +3,14 @@
 
 OpenGL 渲染视图，显示天体和轨迹
 添加比例尺显示和参考系支持
+增强视觉效果：星空背景、发光效果、轨迹渐变
 """
 
 import numpy as np
+import random
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent, QWheelEvent, QPainter, QPen, QFont
+from PyQt6.QtGui import QMouseEvent, QWheelEvent, QPainter, QPen, QFont, QRadialGradient, QColor
 import OpenGL.GL as gl
 
 from physics import (
@@ -23,8 +25,9 @@ class SimulationWidget(QOpenGLWidget):
     OpenGL 模拟视图
     
     负责：
-    - 渲染天体（正圆）
-    - 渲染轨迹
+    - 渲染天体（正圆 + 发光效果）
+    - 渲染轨迹（渐变透明）
+    - 渲染星空背景
     - 渲染比例尺
     - 处理鼠标交互
     """
@@ -63,6 +66,13 @@ class SimulationWidget(QOpenGLWidget):
         self._show_trails = True
         self._max_trail_length = 500
         
+        # 选中的天体索引
+        self._selected_body_index = -1
+        
+        # 星空背景
+        self._stars = []
+        self._init_stars()
+        
         # 动画
         self._animation_timer = QTimer(self)
         self._animation_timer.timeout.connect(self._on_animation_tick)
@@ -70,6 +80,17 @@ class SimulationWidget(QOpenGLWidget):
         self._target_fps = 60
         
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    
+    def _init_stars(self):
+        """初始化星空背景"""
+        self._stars = []
+        for _ in range(200):
+            # 随机位置和亮度
+            x = random.random()
+            y = random.random()
+            brightness = random.uniform(0.2, 0.8)
+            size = random.uniform(0.5, 2.0)
+            self._stars.append((x, y, brightness, size))
     
     def set_mode(self, mode: Mode, unit_system: UnitSystem = None, converter: UnitConverter = None):
         """设置模式"""
@@ -110,7 +131,7 @@ class SimulationWidget(QOpenGLWidget):
     
     def initializeGL(self):
         """初始化 OpenGL"""
-        gl.glClearColor(0.05, 0.05, 0.08, 1.0)
+        gl.glClearColor(0.02, 0.02, 0.05, 1.0)  # 深空背景
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glEnable(gl.GL_LINE_SMOOTH)
@@ -125,6 +146,9 @@ class SimulationWidget(QOpenGLWidget):
         """渲染"""
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
         
+        # 绘制星空背景
+        self._draw_starfield()
+        
         # 绘制轨迹
         if self._show_trails:
             self._draw_trails()
@@ -135,13 +159,30 @@ class SimulationWidget(QOpenGLWidget):
         # 使用 QPainter 绘制 2D overlay（比例尺）
         self._draw_overlay()
     
+    def _draw_starfield(self):
+        """绘制星空背景"""
+        w = self.camera.viewport_width
+        h = self.camera.viewport_height
+        
+        for x, y, brightness, size in self._stars:
+            # 转换为 NDC
+            ndc_x = x * 2.0 - 1.0
+            ndc_y = 1.0 - y * 2.0
+            
+            # 绘制星点
+            gl.glColor4f(1.0, 1.0, 1.0, brightness)
+            gl.glPointSize(size)
+            gl.glBegin(gl.GL_POINTS)
+            gl.glVertex2f(ndc_x, ndc_y)
+            gl.glEnd()
+    
     def _draw_bodies(self):
         """绘制所有天体"""
         for i, body in enumerate(self.engine.bodies):
             self._draw_body(body, i)
     
     def _draw_body(self, body: Body, index: int):
-        """绘制单个天体（正圆）"""
+        """绘制单个天体（正圆 + 发光效果）"""
         # 世界坐标 -> 屏幕坐标
         sx, sy = self.camera.world_to_screen(body.position[0], body.position[1])
         
@@ -157,18 +198,41 @@ class SimulationWidget(QOpenGLWidget):
         ndc_x = (sx / w) * 2.0 - 1.0
         ndc_y = 1.0 - (sy / h) * 2.0
         
-        # 关键修复：使用不同的 x/y 半径来补偿宽高比
-        # NDC 中 x 范围 [-1, 1] 对应宽度 w 像素
-        # NDC 中 y 范围 [-1, 1] 对应高度 h 像素
-        # 所以 screen_radius 像素在 NDC 中需要不同的 x/y 半径
-        ndc_rx = screen_radius / w * 2.0  # x 方向的 NDC 半径
-        ndc_ry = screen_radius / h * 2.0  # y 方向的 NDC 半径
+        # 使用不同的 x/y 半径来补偿宽高比
+        ndc_rx = screen_radius / w * 2.0
+        ndc_ry = screen_radius / h * 2.0
         
-        # 绘制圆形（在 NDC 中是椭圆，但在屏幕上是正圆）
+        # 绘制发光效果（外圈光晕）
         color = body.color
-        gl.glColor4f(color[0], color[1], color[2], 1.0)
-        
+        glow_radius_mult = 1.5
         segments = 32
+        
+        # 外层光晕
+        gl.glColor4f(color[0], color[1], color[2], 0.2)
+        gl.glBegin(gl.GL_TRIANGLE_FAN)
+        gl.glVertex2f(ndc_x, ndc_y)
+        for j in range(segments + 1):
+            angle = 2.0 * np.pi * j / segments
+            gl.glVertex2f(
+                ndc_x + ndc_rx * glow_radius_mult * np.cos(angle),
+                ndc_y + ndc_ry * glow_radius_mult * np.sin(angle)
+            )
+        gl.glEnd()
+        
+        # 中层光晕
+        gl.glColor4f(color[0], color[1], color[2], 0.4)
+        gl.glBegin(gl.GL_TRIANGLE_FAN)
+        gl.glVertex2f(ndc_x, ndc_y)
+        for j in range(segments + 1):
+            angle = 2.0 * np.pi * j / segments
+            gl.glVertex2f(
+                ndc_x + ndc_rx * 1.2 * np.cos(angle),
+                ndc_y + ndc_ry * 1.2 * np.sin(angle)
+            )
+        gl.glEnd()
+        
+        # 绘制主体
+        gl.glColor4f(color[0], color[1], color[2], 1.0)
         gl.glBegin(gl.GL_TRIANGLE_FAN)
         gl.glVertex2f(ndc_x, ndc_y)
         for j in range(segments + 1):
@@ -179,16 +243,32 @@ class SimulationWidget(QOpenGLWidget):
             )
         gl.glEnd()
         
-        # 绘制边框
-        gl.glColor4f(1.0, 1.0, 1.0, 0.5)
-        gl.glBegin(gl.GL_LINE_LOOP)
-        for j in range(segments):
+        # 绘制高光（模拟光照）
+        highlight_offset = 0.3
+        highlight_size = 0.4
+        gl.glColor4f(1.0, 1.0, 1.0, 0.6)
+        gl.glBegin(gl.GL_TRIANGLE_FAN)
+        gl.glVertex2f(ndc_x - ndc_rx * highlight_offset, ndc_y + ndc_ry * highlight_offset)
+        for j in range(segments + 1):
             angle = 2.0 * np.pi * j / segments
             gl.glVertex2f(
-                ndc_x + ndc_rx * np.cos(angle),
-                ndc_y + ndc_ry * np.sin(angle)
+                ndc_x - ndc_rx * highlight_offset + ndc_rx * highlight_size * np.cos(angle),
+                ndc_y + ndc_ry * highlight_offset + ndc_ry * highlight_size * np.sin(angle)
             )
         gl.glEnd()
+        
+        # 如果是选中的天体，绘制光环
+        if index == self._selected_body_index:
+            gl.glColor4f(1.0, 1.0, 1.0, 0.8)
+            gl.glLineWidth(2.0)
+            gl.glBegin(gl.GL_LINE_LOOP)
+            for j in range(segments):
+                angle = 2.0 * np.pi * j / segments
+                gl.glVertex2f(
+                    ndc_x + ndc_rx * 1.3 * np.cos(angle),
+                    ndc_y + ndc_ry * 1.3 * np.sin(angle)
+                )
+            gl.glEnd()
     
     def _draw_trails(self):
         """绘制轨迹"""
@@ -198,22 +278,37 @@ class SimulationWidget(QOpenGLWidget):
             self._draw_trail(body)
     
     def _draw_trail(self, body: Body):
-        """绘制单个轨迹"""
+        """绘制单个轨迹（渐变透明）"""
         trail = body.trail[-self._max_trail_length:]
         
-        color = body.color
-        gl.glColor4f(color[0], color[1], color[2], 0.3)
-        gl.glLineWidth(1.0)
+        if len(trail) < 2:
+            return
         
-        gl.glBegin(gl.GL_LINE_STRIP)
-        for pos in trail:
-            sx, sy = self.camera.world_to_screen(pos[0], pos[1])
-            w = self.camera.viewport_width
-            h = self.camera.viewport_height
-            ndc_x = (sx / w) * 2.0 - 1.0
-            ndc_y = 1.0 - (sy / h) * 2.0
-            gl.glVertex2f(ndc_x, ndc_y)
-        gl.glEnd()
+        color = body.color
+        w = self.camera.viewport_width
+        h = self.camera.viewport_height
+        
+        # 绘制渐变轨迹
+        for i in range(len(trail) - 1):
+            # 计算透明度（越老越透明）
+            alpha = 0.1 + 0.5 * (i / len(trail))
+            
+            gl.glColor4f(color[0], color[1], color[2], alpha)
+            gl.glLineWidth(1.5)
+            
+            # 转换为 NDC
+            sx1, sy1 = self.camera.world_to_screen(trail[i][0], trail[i][1])
+            sx2, sy2 = self.camera.world_to_screen(trail[i+1][0], trail[i+1][1])
+            
+            ndc_x1 = (sx1 / w) * 2.0 - 1.0
+            ndc_y1 = 1.0 - (sy1 / h) * 2.0
+            ndc_x2 = (sx2 / w) * 2.0 - 1.0
+            ndc_y2 = 1.0 - (sy2 / h) * 2.0
+            
+            gl.glBegin(gl.GL_LINES)
+            gl.glVertex2f(ndc_x1, ndc_y1)
+            gl.glVertex2f(ndc_x2, ndc_y2)
+            gl.glEnd()
     
     def _draw_overlay(self):
         """绘制 2D overlay（比例尺）"""
@@ -238,7 +333,7 @@ class SimulationWidget(QOpenGLWidget):
         
         # 绘制线条（转换为 int 以匹配 QPainter.drawLine 重载）
         x_end = int(x + pixel_len)
-        pen = QPen(Qt.GlobalColor.white)
+        pen = QPen(QColor(255, 255, 255, 200))
         pen.setWidth(2)
         painter.setPen(pen)
         painter.drawLine(int(x), int(y), x_end, int(y))
@@ -251,7 +346,7 @@ class SimulationWidget(QOpenGLWidget):
         font = QFont()
         font.setPointSize(10)
         painter.setFont(font)
-        painter.setPen(Qt.GlobalColor.white)
+        painter.setPen(QColor(255, 255, 255, 200))
         
         # 计算文本位置（居中）
         text_width = painter.fontMetrics().horizontalAdvance(label)
@@ -308,5 +403,11 @@ class SimulationWidget(QOpenGLWidget):
             
             dist = np.sqrt((sx - body_sx)**2 + (sy - body_sy)**2)
             if dist <= screen_radius:
+                self._selected_body_index = i
                 self.body_clicked.emit(i)
+                self.update()
                 return
+        
+        # 点击空白处取消选择
+        self._selected_body_index = -1
+        self.update()
