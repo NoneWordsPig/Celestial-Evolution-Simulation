@@ -2,12 +2,14 @@
 Add Body Dialog
 
 添加天体对话框
+支持两种速度输入模式：笛卡尔坐标（vx, vy）和极坐标（speed, angle）
 """
 
 import numpy as np
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit, QDoubleSpinBox,
-    QPushButton, QHBoxLayout, QColorDialog, QLabel, QGroupBox
+    QPushButton, QHBoxLayout, QColorDialog, QLabel, QGroupBox,
+    QRadioButton, QButtonGroup, QStackedWidget, QWidget
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
@@ -20,6 +22,9 @@ class AddBodyDialog(QDialog):
     添加天体对话框
     
     根据当前 Mode 显示不同的单位
+    支持两种速度输入模式：
+    - 笛卡尔坐标模式：vx, vy
+    - 极坐标模式：speed, angle
     """
     
     def __init__(
@@ -35,6 +40,7 @@ class AddBodyDialog(QDialog):
         self.converter = converter
         
         self._selected_color = (0.3, 0.5, 1.0)  # 默认蓝色
+        self._velocity_mode = 'polar'  # 默认极坐标模式
         
         self.setWindowTitle("添加天体")
         self.setMinimumWidth(350)
@@ -73,7 +79,7 @@ class AddBodyDialog(QDialog):
         self.radius_spin = QDoubleSpinBox()
         self.radius_spin.setRange(0.01, 1e6)
         self.radius_spin.setDecimals(2)
-        self.radius_spin.setValue(1.0)
+        self.radius_spin.setValue(0.1)
         
         if self.mode == Mode.SIMULATION:
             self.radius_spin.setSuffix(" DU")
@@ -94,12 +100,12 @@ class AddBodyDialog(QDialog):
         
         self.pos_x_spin = QDoubleSpinBox()
         self.pos_x_spin.setRange(-1e9, 1e9)
-        self.pos_x_spin.setDecimals(2)
+        self.pos_x_spin.setDecimals(6)
         self.pos_x_spin.setValue(10.0)
         
         self.pos_y_spin = QDoubleSpinBox()
         self.pos_y_spin.setRange(-1e9, 1e9)
-        self.pos_y_spin.setDecimals(2)
+        self.pos_y_spin.setDecimals(6)
         self.pos_y_spin.setValue(0.0)
         
         if self.mode == Mode.SIMULATION:
@@ -121,32 +127,98 @@ class AddBodyDialog(QDialog):
         
         # 速度组
         vel_group = QGroupBox("速度")
-        vel_layout = QFormLayout()
+        vel_layout = QVBoxLayout()
+        
+        # 速度输入模式选择
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("输入模式:")
+        mode_layout.addWidget(mode_label)
+        
+        self.cartesian_radio = QRadioButton("X/Y")
+        self.polar_radio = QRadioButton("V/θ")
+        self.polar_radio.setChecked(True)  # 默认极坐标
+        
+        self.velocity_mode_group = QButtonGroup()
+        self.velocity_mode_group.addButton(self.cartesian_radio, 0)
+        self.velocity_mode_group.addButton(self.polar_radio, 1)
+        
+        mode_layout.addWidget(self.cartesian_radio)
+        mode_layout.addWidget(self.polar_radio)
+        mode_layout.addStretch()
+        
+        # 连接信号：模式切换时更新输入区域
+        self.velocity_mode_group.buttonClicked.connect(self._on_velocity_mode_changed)
+        
+        vel_layout.addLayout(mode_layout)
+        
+        # 速度输入堆叠组件
+        self.vel_stack = QStackedWidget()
+        
+        # 笛卡尔模式页面
+        cartesian_page = QWidget()
+        cartesian_layout = QFormLayout()
+        
+        self.vx_spin = QDoubleSpinBox()
+        self.vx_spin.setRange(-1e6, 1e6)
+        self.vx_spin.setDecimals(6)
+        self.vx_spin.setValue(0.0)
+        
+        self.vy_spin = QDoubleSpinBox()
+        self.vy_spin.setRange(-1e6, 1e6)
+        self.vy_spin.setDecimals(6)
+        self.vy_spin.setValue(10.0)
+        
+        if self.mode == Mode.SIMULATION:
+            vel_unit = " DU/TU"
+        else:
+            if self.converter:
+                vel_unit = " km/s"
+            else:
+                vel_unit = " DU/TU"
+        
+        self.vx_spin.setSuffix(vel_unit)
+        self.vy_spin.setSuffix(vel_unit)
+        
+        cartesian_layout.addRow("vx:", self.vx_spin)
+        cartesian_layout.addRow("vy:", self.vy_spin)
+        
+        cartesian_page.setLayout(cartesian_layout)
+        self.vel_stack.addWidget(cartesian_page)
+        
+        # 极坐标模式页面
+        polar_page = QWidget()
+        polar_layout = QFormLayout()
         
         self.speed_spin = QDoubleSpinBox()
         self.speed_spin.setRange(0.0, 1e6)
-        self.speed_spin.setDecimals(3)
+        self.speed_spin.setDecimals(6)
         self.speed_spin.setValue(10.0)
         
         self.direction_spin = QDoubleSpinBox()
-        self.direction_spin.setRange(0.0, 360.0)
+        self.direction_spin.setRange(-360.0, 360.0)
         self.direction_spin.setDecimals(1)
         self.direction_spin.setValue(90.0)
         self.direction_spin.setSuffix("°")
         
-        if self.mode == Mode.SIMULATION:
-            self.speed_spin.setSuffix(" DU/TU")
-        else:
-            if self.converter:
-                self.speed_spin.setSuffix(" km/s")
-            else:
-                self.speed_spin.setSuffix(" DU/TU")
+        self.speed_spin.setSuffix(vel_unit)
         
-        vel_layout.addRow("速率:", self.speed_spin)
-        vel_layout.addRow("方向:", self.direction_spin)
+        polar_layout.addRow("速率:", self.speed_spin)
+        polar_layout.addRow("角度:", self.direction_spin)
+        
+        polar_page.setLayout(polar_layout)
+        self.vel_stack.addWidget(polar_page)
+        
+        # 默认显示极坐标页面（与 polar_radio 选中状态一致）
+        self.vel_stack.setCurrentIndex(1)
+        
+        vel_layout.addWidget(self.vel_stack)
         
         vel_group.setLayout(vel_layout)
         layout.addWidget(vel_group)
+        
+        # 连接信号
+        self.cartesian_radio.toggled.connect(self._on_velocity_mode_changed)
+        self.polar_radio.toggled.connect(self._on_velocity_mode_changed)
         
         # 颜色
         color_group = QGroupBox("颜色")
@@ -177,6 +249,36 @@ class AddBodyDialog(QDialog):
         button_layout.addWidget(self.cancel_btn)
         
         layout.addLayout(button_layout)
+    
+    def _on_velocity_mode_changed(self):
+        """速度输入模式切换"""
+        if self.cartesian_radio.isChecked():
+            # 切换到笛卡尔模式
+            # 从极坐标转换到笛卡尔
+            speed = self.speed_spin.value()
+            angle_rad = np.radians(self.direction_spin.value())
+            vx = speed * np.cos(angle_rad)
+            vy = speed * np.sin(angle_rad)
+            
+            self.vx_spin.setValue(vx)
+            self.vy_spin.setValue(vy)
+            
+            self.vel_stack.setCurrentIndex(0)
+            self._velocity_mode = 'cartesian'
+        else:
+            # 切换到极坐标模式
+            # 从笛卡尔转换到极坐标
+            vx = self.vx_spin.value()
+            vy = self.vy_spin.value()
+            
+            speed = np.sqrt(vx**2 + vy**2)
+            angle = np.degrees(np.arctan2(vy, vx))
+            
+            self.speed_spin.setValue(speed)
+            self.direction_spin.setValue(angle)
+            
+            self.vel_stack.setCurrentIndex(1)
+            self._velocity_mode = 'polar'
     
     def _on_color_clicked(self):
         """选择颜色"""
@@ -212,7 +314,6 @@ class AddBodyDialog(QDialog):
             radius = self.radius_spin.value()
             pos_x = self.pos_x_spin.value()
             pos_y = self.pos_y_spin.value()
-            speed = self.speed_spin.value()
         else:
             # 科学模式，需要转换
             if self.converter:
@@ -220,18 +321,40 @@ class AddBodyDialog(QDialog):
                 radius = self.converter.real_to_sim_distance(self.radius_spin.value())
                 pos_x = self.converter.real_to_sim_distance(self.pos_x_spin.value())
                 pos_y = self.converter.real_to_sim_distance(self.pos_y_spin.value())
-                speed = self.converter.real_to_sim_velocity(self.speed_spin.value() * 1000.0)  # km/s -> m/s
             else:
                 mass = self.mass_spin.value()
                 radius = self.radius_spin.value()
                 pos_x = self.pos_x_spin.value()
                 pos_y = self.pos_y_spin.value()
-                speed = self.speed_spin.value()
         
-        # 计算速度分量
-        direction_rad = np.radians(self.direction_spin.value())
-        vx = speed * np.cos(direction_rad)
-        vy = speed * np.sin(direction_rad)
+        # 获取速度向量
+        if self._velocity_mode == 'cartesian':
+            # 笛卡尔模式
+            if self.mode == Mode.SIMULATION:
+                vx = self.vx_spin.value()
+                vy = self.vy_spin.value()
+            else:
+                if self.converter:
+                    # km/s -> m/s -> 模拟单位
+                    vx = self.converter.real_to_sim_velocity(self.vx_spin.value() * 1000.0)
+                    vy = self.converter.real_to_sim_velocity(self.vy_spin.value() * 1000.0)
+                else:
+                    vx = self.vx_spin.value()
+                    vy = self.vy_spin.value()
+        else:
+            # 极坐标模式
+            if self.mode == Mode.SIMULATION:
+                speed = self.speed_spin.value()
+            else:
+                if self.converter:
+                    # km/s -> m/s -> 模拟单位
+                    speed = self.converter.real_to_sim_velocity(self.speed_spin.value() * 1000.0)
+                else:
+                    speed = self.speed_spin.value()
+            
+            direction_rad = np.radians(self.direction_spin.value())
+            vx = speed * np.cos(direction_rad)
+            vy = speed * np.sin(direction_rad)
         
         return Body(
             name=self.name_edit.text(),

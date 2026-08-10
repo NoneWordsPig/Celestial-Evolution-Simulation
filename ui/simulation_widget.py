@@ -225,7 +225,7 @@ class SimulationWidget(QOpenGLWidget):
             self._draw_body(body, i)
     
     def _draw_body(self, body: Body, index: int):
-        """绘制单个天体（正圆 + 发光效果）"""
+        """绘制单个天体（简洁明快风格）"""
         # 世界坐标 -> 屏幕坐标
         sx, sy = self.camera.world_to_screen(body.position[0], body.position[1])
         
@@ -245,13 +245,12 @@ class SimulationWidget(QOpenGLWidget):
         ndc_rx = screen_radius / w * 2.0
         ndc_ry = screen_radius / h * 2.0
         
-        # 绘制发光效果（外圈光晕）
         color = body.color
-        glow_radius_mult = 1.5
         segments = 32
         
-        # 外层光晕
-        gl.glColor4f(color[0], color[1], color[2], 0.2)
+        # 1. 柔和外发光（单层，低透明度）
+        glow_radius_mult = 1.3
+        gl.glColor4f(color[0], color[1], color[2], 0.15)
         gl.glBegin(gl.GL_TRIANGLE_FAN)
         gl.glVertex2f(ndc_x, ndc_y)
         for j in range(segments + 1):
@@ -262,19 +261,7 @@ class SimulationWidget(QOpenGLWidget):
             )
         gl.glEnd()
         
-        # 中层光晕
-        gl.glColor4f(color[0], color[1], color[2], 0.4)
-        gl.glBegin(gl.GL_TRIANGLE_FAN)
-        gl.glVertex2f(ndc_x, ndc_y)
-        for j in range(segments + 1):
-            angle = 2.0 * np.pi * j / segments
-            gl.glVertex2f(
-                ndc_x + ndc_rx * 1.2 * np.cos(angle),
-                ndc_y + ndc_ry * 1.2 * np.sin(angle)
-            )
-        gl.glEnd()
-        
-        # 绘制主体
+        # 2. 主体圆形（实心）
         gl.glColor4f(color[0], color[1], color[2], 1.0)
         gl.glBegin(gl.GL_TRIANGLE_FAN)
         gl.glVertex2f(ndc_x, ndc_y)
@@ -286,21 +273,19 @@ class SimulationWidget(QOpenGLWidget):
             )
         gl.glEnd()
         
-        # 绘制高光（模拟光照）
-        highlight_offset = 0.3
-        highlight_size = 0.4
-        gl.glColor4f(1.0, 1.0, 1.0, 0.6)
-        gl.glBegin(gl.GL_TRIANGLE_FAN)
-        gl.glVertex2f(ndc_x - ndc_rx * highlight_offset, ndc_y + ndc_ry * highlight_offset)
-        for j in range(segments + 1):
+        # 3. 细边框（增加清晰度）
+        gl.glColor4f(1.0, 1.0, 1.0, 0.4)
+        gl.glLineWidth(1.0)
+        gl.glBegin(gl.GL_LINE_LOOP)
+        for j in range(segments):
             angle = 2.0 * np.pi * j / segments
             gl.glVertex2f(
-                ndc_x - ndc_rx * highlight_offset + ndc_rx * highlight_size * np.cos(angle),
-                ndc_y + ndc_ry * highlight_offset + ndc_ry * highlight_size * np.sin(angle)
+                ndc_x + ndc_rx * np.cos(angle),
+                ndc_y + ndc_ry * np.sin(angle)
             )
         gl.glEnd()
         
-        # 如果是选中的天体，绘制光环
+        # 4. 选中光环（保留）
         if index == self._selected_body_index:
             gl.glColor4f(1.0, 1.0, 1.0, 0.8)
             gl.glLineWidth(2.0)
@@ -308,11 +293,11 @@ class SimulationWidget(QOpenGLWidget):
             for j in range(segments):
                 angle = 2.0 * np.pi * j / segments
                 gl.glVertex2f(
-                    ndc_x + ndc_rx * 1.3 * np.cos(angle),
-                    ndc_y + ndc_ry * 1.3 * np.sin(angle)
+                    ndc_x + ndc_rx * 1.4 * np.cos(angle),
+                    ndc_y + ndc_ry * 1.4 * np.sin(angle)
                 )
             gl.glEnd()
-    
+
     def _draw_trails(self):
         """绘制轨迹"""
         for body in self.engine.bodies:

@@ -44,7 +44,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         # 核心组件
-        self.engine = PhysicsEngine(integrator_type='verlet', dt=0.1, time_scale=1.0)
+        self.engine = PhysicsEngine(integrator_type='rk4', dt=0.001, time_scale=1.0)
         self.camera = Camera(viewport_width=800, viewport_height=600, zoom=10.0)
         
         # 参考系和过渡管理
