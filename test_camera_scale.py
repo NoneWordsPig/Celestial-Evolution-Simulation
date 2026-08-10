@@ -18,6 +18,8 @@ class TestCameraBasics(unittest.TestCase):
         self.assertEqual(cam.zoom, 1.0)
         self.assertEqual(cam.viewport_width, 800)
         self.assertEqual(cam.viewport_height, 600)
+        self.assertEqual(cam.min_zoom, 0.001)
+        self.assertEqual(cam.max_zoom, 2000.0)
     
     def test_custom_initialization(self):
         """自定义初始化"""

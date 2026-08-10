@@ -27,8 +27,8 @@ class Camera:
         center_x: float = 0.0,
         center_y: float = 0.0,
         zoom: float = 1.0,
-        min_zoom: float = 0.01,
-        max_zoom: float = 1000.0
+        min_zoom: float = 0.001,
+        max_zoom: float = 2000.0
     ):
         """
         初始化摄像机
