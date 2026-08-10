@@ -59,8 +59,9 @@ class Body:
         self.physical_radius = max(physical_radius, 1e-10)  # 物理半径，防止零值
         
         # 渲染半径：默认等于物理半径，可独立设置
+        # 不强制最小可见尺寸，保留真实半径映射值；仅防止零/负值
         if render_radius is not None:
-            self.render_radius = max(render_radius, 0.1)  # 最小可见尺寸
+            self.render_radius = max(render_radius, 1e-10)
         else:
             self.render_radius = self.physical_radius
         

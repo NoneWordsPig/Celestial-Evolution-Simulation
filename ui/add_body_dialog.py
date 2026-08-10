@@ -9,12 +9,13 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit,
     QPushButton, QHBoxLayout, QColorDialog, QLabel, QGroupBox,
-    QRadioButton, QButtonGroup, QStackedWidget, QWidget
+    QRadioButton, QButtonGroup, QStackedWidget, QWidget, QComboBox
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 
 from physics import Body, Mode, UnitSystem, UnitConverter
+from physics.unit_system import UnitSystem as ScientificUnitSystem
 from .scientific_number_input import ScientificNumberInput
 
 
@@ -39,6 +40,8 @@ class AddBodyDialog(QDialog):
         self.mode = mode
         self.unit_system = unit_system or UnitSystem()
         self.converter = converter
+        # 独立科学归一化 UnitSystem：科学模式现实单位 -> normalized simulation units
+        self.scientific_units = ScientificUnitSystem()
         
         self._selected_color = (0.3, 0.5, 1.0)  # 默认蓝色
         self._velocity_mode = 'polar'  # 默认极坐标模式
@@ -47,6 +50,26 @@ class AddBodyDialog(QDialog):
         self.setMinimumWidth(350)
         
         self._setup_ui()
+
+    def _unit_row(self, widget, units, default_unit):
+        """
+        为数值输入附加单位选择器（仅科学模式使用）。
+
+        Returns:
+            (容器 QWidget, QComboBox)
+        """
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        combo = QComboBox()
+        combo.addItems(units)
+        combo.setCurrentText(default_unit)
+
+        row_layout.addWidget(widget, 1)
+        row_layout.addWidget(combo)
+        return row, combo
     
     def _setup_ui(self):
         """设置 UI"""
@@ -61,34 +84,32 @@ class AddBodyDialog(QDialog):
         basic_layout.addRow("名称:", self.name_edit)
         
         # 质量
-        if self.mode == Mode.SIMULATION:
-            mass_unit = " MU"
-        else:
-            if self.converter:
-                mass_unit = f" {self.converter.real_mass_unit}"
-            else:
-                mass_unit = " MU"
-
         self.mass_spin = ScientificNumberInput(
-            value=1.0, min_value=1e-30, max_value=1e38, suffix=mass_unit
+            value=1.0, min_value=1e-30, max_value=1e38,
+            suffix=" MU" if self.mode == Mode.SIMULATION else ""
         )
-        
-        basic_layout.addRow("质量:", self.mass_spin)
+
+        if self.mode == Mode.SCIENTIFIC:
+            mass_row, self.mass_unit_combo = self._unit_row(
+                self.mass_spin, ["kg", "M_sun"], "M_sun"
+            )
+            basic_layout.addRow("质量:", mass_row)
+        else:
+            basic_layout.addRow("质量:", self.mass_spin)
         
         # 半径
-        if self.mode == Mode.SIMULATION:
-            radius_unit = " DU"
-        else:
-            if self.converter:
-                radius_unit = f" {self.converter.real_distance_unit}"
-            else:
-                radius_unit = " DU"
-
         self.radius_spin = ScientificNumberInput(
-            value=0.1, min_value=1e-30, max_value=1e12, suffix=radius_unit
+            value=0.1, min_value=1e-30, max_value=1e12,
+            suffix=" DU" if self.mode == Mode.SIMULATION else ""
         )
-        
-        basic_layout.addRow("半径:", self.radius_spin)
+
+        if self.mode == Mode.SCIENTIFIC:
+            radius_row, self.radius_unit_combo = self._unit_row(
+                self.radius_spin, ["m", "km", "AU"], "km"
+            )
+            basic_layout.addRow("半径:", radius_row)
+        else:
+            basic_layout.addRow("半径:", self.radius_spin)
         
         basic_group.setLayout(basic_layout)
         layout.addWidget(basic_group)
@@ -97,23 +118,27 @@ class AddBodyDialog(QDialog):
         pos_group = QGroupBox("位置")
         pos_layout = QFormLayout()
         
-        if self.mode == Mode.SIMULATION:
-            unit = " DU"
-        else:
-            if self.converter:
-                unit = f" {self.converter.real_distance_unit}"
-            else:
-                unit = " DU"
-
         self.pos_x_spin = ScientificNumberInput(
-            value=10.0, min_value=-1e18, max_value=1e18, suffix=unit
+            value=10.0, min_value=-1e18, max_value=1e18,
+            suffix=" DU" if self.mode == Mode.SIMULATION else ""
         )
         self.pos_y_spin = ScientificNumberInput(
-            value=0.0, min_value=-1e18, max_value=1e18, suffix=unit
+            value=0.0, min_value=-1e18, max_value=1e18,
+            suffix=" DU" if self.mode == Mode.SIMULATION else ""
         )
-        
-        pos_layout.addRow("X:", self.pos_x_spin)
-        pos_layout.addRow("Y:", self.pos_y_spin)
+
+        if self.mode == Mode.SCIENTIFIC:
+            pos_x_row, self.pos_x_unit_combo = self._unit_row(
+                self.pos_x_spin, ["m", "km", "AU"], "AU"
+            )
+            pos_y_row, self.pos_y_unit_combo = self._unit_row(
+                self.pos_y_spin, ["m", "km", "AU"], "AU"
+            )
+            pos_layout.addRow("X:", pos_x_row)
+            pos_layout.addRow("Y:", pos_y_row)
+        else:
+            pos_layout.addRow("X:", self.pos_x_spin)
+            pos_layout.addRow("Y:", self.pos_y_spin)
         
         pos_group.setLayout(pos_layout)
         layout.addWidget(pos_group)
@@ -151,23 +176,27 @@ class AddBodyDialog(QDialog):
         cartesian_page = QWidget()
         cartesian_layout = QFormLayout()
         
-        if self.mode == Mode.SIMULATION:
-            vel_unit = " DU/TU"
-        else:
-            if self.converter:
-                vel_unit = " km/s"
-            else:
-                vel_unit = " DU/TU"
-
         self.vx_spin = ScientificNumberInput(
-            value=0.0, min_value=-1e12, max_value=1e12, suffix=vel_unit
+            value=0.0, min_value=-1e12, max_value=1e12,
+            suffix=" DU/TU" if self.mode == Mode.SIMULATION else ""
         )
         self.vy_spin = ScientificNumberInput(
-            value=10.0, min_value=-1e12, max_value=1e12, suffix=vel_unit
+            value=10.0, min_value=-1e12, max_value=1e12,
+            suffix=" DU/TU" if self.mode == Mode.SIMULATION else ""
         )
-        
-        cartesian_layout.addRow("vx:", self.vx_spin)
-        cartesian_layout.addRow("vy:", self.vy_spin)
+
+        if self.mode == Mode.SCIENTIFIC:
+            vx_row, self.vx_unit_combo = self._unit_row(
+                self.vx_spin, ["m/s", "km/s", "AU/T0"], "km/s"
+            )
+            vy_row, self.vy_unit_combo = self._unit_row(
+                self.vy_spin, ["m/s", "km/s", "AU/T0"], "km/s"
+            )
+            cartesian_layout.addRow("vx:", vx_row)
+            cartesian_layout.addRow("vy:", vy_row)
+        else:
+            cartesian_layout.addRow("vx:", self.vx_spin)
+            cartesian_layout.addRow("vy:", self.vy_spin)
         
         cartesian_page.setLayout(cartesian_layout)
         self.vel_stack.addWidget(cartesian_page)
@@ -177,13 +206,20 @@ class AddBodyDialog(QDialog):
         polar_layout = QFormLayout()
         
         self.speed_spin = ScientificNumberInput(
-            value=10.0, min_value=0.0, max_value=1e12, suffix=vel_unit
+            value=10.0, min_value=0.0, max_value=1e12,
+            suffix=" DU/TU" if self.mode == Mode.SIMULATION else ""
         )
         self.direction_spin = ScientificNumberInput(
             value=90.0, min_value=-360.0, max_value=360.0, suffix="°"
         )
-        
-        polar_layout.addRow("速率:", self.speed_spin)
+
+        if self.mode == Mode.SCIENTIFIC:
+            speed_row, self.speed_unit_combo = self._unit_row(
+                self.speed_spin, ["m/s", "km/s", "AU/T0"], "km/s"
+            )
+            polar_layout.addRow("速率:", speed_row)
+        else:
+            polar_layout.addRow("速率:", self.speed_spin)
         polar_layout.addRow("角度:", self.direction_spin)
         
         polar_page.setLayout(polar_layout)
@@ -288,50 +324,53 @@ class AddBodyDialog(QDialog):
         )
     
     def get_body(self) -> Body:
-        """获取创建的天体"""
-        # 转换单位
+        """
+        获取创建的天体
+
+        科学模式：UI 现实单位 -> UnitSystem -> normalized simulation units
+        模拟模式：直接使用 normalized simulation units
+        Physics Engine 只接收 normalized values（G = 1）。
+        """
         if self.mode == Mode.SIMULATION:
+            # 模拟模式：直接使用 normalized simulation units
             mass = self.mass_spin.value()
             radius = self.radius_spin.value()
             pos_x = self.pos_x_spin.value()
             pos_y = self.pos_y_spin.value()
         else:
-            # 科学模式，需要转换
-            if self.converter:
-                mass = self.converter.real_to_sim_mass(self.mass_spin.value())
-                radius = self.converter.real_to_sim_distance(self.radius_spin.value())
-                pos_x = self.converter.real_to_sim_distance(self.pos_x_spin.value())
-                pos_y = self.converter.real_to_sim_distance(self.pos_y_spin.value())
-            else:
-                mass = self.mass_spin.value()
-                radius = self.radius_spin.value()
-                pos_x = self.pos_x_spin.value()
-                pos_y = self.pos_y_spin.value()
+            # 科学模式：UI 现实单位 -> UnitSystem -> normalized simulation units
+            mass = self.scientific_units.to_simulation(
+                self.mass_spin.value(), self.mass_unit_combo.currentText()
+            )
+            radius = self.scientific_units.to_simulation(
+                self.radius_spin.value(), self.radius_unit_combo.currentText()
+            )
+            pos_x = self.scientific_units.to_simulation(
+                self.pos_x_spin.value(), self.pos_x_unit_combo.currentText()
+            )
+            pos_y = self.scientific_units.to_simulation(
+                self.pos_y_spin.value(), self.pos_y_unit_combo.currentText()
+            )
         
         # 获取速度向量
         if self._velocity_mode == 'cartesian':
-            # 笛卡尔模式
             if self.mode == Mode.SIMULATION:
                 vx = self.vx_spin.value()
                 vy = self.vy_spin.value()
             else:
-                if self.converter:
-                    # km/s -> m/s -> 模拟单位
-                    vx = self.converter.real_to_sim_velocity(self.vx_spin.value() * 1000.0)
-                    vy = self.converter.real_to_sim_velocity(self.vy_spin.value() * 1000.0)
-                else:
-                    vx = self.vx_spin.value()
-                    vy = self.vy_spin.value()
+                vx = self.scientific_units.to_simulation(
+                    self.vx_spin.value(), self.vx_unit_combo.currentText()
+                )
+                vy = self.scientific_units.to_simulation(
+                    self.vy_spin.value(), self.vy_unit_combo.currentText()
+                )
         else:
-            # 极坐标模式
             if self.mode == Mode.SIMULATION:
                 speed = self.speed_spin.value()
             else:
-                if self.converter:
-                    # km/s -> m/s -> 模拟单位
-                    speed = self.converter.real_to_sim_velocity(self.speed_spin.value() * 1000.0)
-                else:
-                    speed = self.speed_spin.value()
+                speed = self.scientific_units.to_simulation(
+                    self.speed_spin.value(), self.speed_unit_combo.currentText()
+                )
             
             direction_rad = np.radians(self.direction_spin.value())
             vx = speed * np.cos(direction_rad)

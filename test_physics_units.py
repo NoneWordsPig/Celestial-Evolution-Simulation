@@ -60,10 +60,17 @@ class TestBodyRadiusSeparation(unittest.TestCase):
         self.assertAlmostEqual(body.radius, 4.5)
         self.assertAlmostEqual(body.radius, body.physical_radius)
 
-    def test_minimum_render_radius(self):
-        """render_radius 有最小值保护"""
+    def test_render_radius_preserves_real_value(self):
+        """render_radius 保留真实半径映射值，不做观感最小化"""
         body = Body(name="test", mass=1.0, physical_radius=1.0, render_radius=0.001)
-        self.assertGreaterEqual(body.render_radius, 0.1)
+        self.assertAlmostEqual(body.render_radius, 0.001)
+
+    def test_render_radius_nonzero_floor(self):
+        """render_radius 仅防止零/负值"""
+        body = Body(name="test", mass=1.0, physical_radius=1.0, render_radius=1e-12)
+        self.assertGreaterEqual(body.render_radius, 1e-10)
+        body2 = Body(name="test", mass=1.0, physical_radius=1.0, render_radius=-5.0)
+        self.assertGreaterEqual(body2.render_radius, 1e-10)
 
 
 class TestGravityG1(unittest.TestCase):
