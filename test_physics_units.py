@@ -20,6 +20,7 @@ from physics import (
     UnitSystem, UnitConverter, DEFAULT_UNITS,
     G, SOFTENING,
 )
+from physics.constants import BASE_SIMULATION_RATE, MAX_SUBSTEPS_PER_FRAME
 
 
 class TestBodyRadiusSeparation(unittest.TestCase):
@@ -500,6 +501,58 @@ class TestCollisionRadiusIsolation(unittest.TestCase):
         # render_radius: ((5^3+5^3)^(1/3))^3 + 5^3)^(1/3) = (250+125)^(1/3)
         expected_render = (250.0 + 125.0) ** (1.0 / 3.0)
         self.assertAlmostEqual(merged_twice.render_radius, expected_render, places=6)
+
+
+class TestEngineAccumulatorStep(unittest.TestCase):
+    """fixed timestep + accumulator 平滑步进"""
+
+    def _engine_with_bodies(self, **kwargs):
+        engine = PhysicsEngine(**kwargs)
+        engine.add_body(Body(name="A", mass=1.0, position=(0.0, 0.0)))
+        engine.add_body(Body(name="B", mass=1.0, position=(10.0, 0.0)))
+        return engine
+
+    def test_1x_rate_is_old_5x(self):
+        """1× = BASE_SIMULATION_RATE（旧版 5×：5 子步/帧 × 60fps × dt）"""
+        engine = self._engine_with_bodies(time_scale=1.0)
+        self.assertAlmostEqual(engine.simulation_rate, BASE_SIMULATION_RATE)
+        self.assertAlmostEqual(BASE_SIMULATION_RATE, 0.3)
+
+    def test_time_scale_updates_rate(self):
+        engine = self._engine_with_bodies(time_scale=1.0)
+        engine.time_scale = 10.0
+        self.assertAlmostEqual(engine.simulation_rate, BASE_SIMULATION_RATE * 10.0)
+
+    def test_advance_advances_by_rate(self):
+        """一帧（1/60s）@1× → 5 子步 = 0.005 TU"""
+        engine = self._engine_with_bodies(dt=0.001, time_scale=1.0)
+        steps = engine.advance(1.0 / 60.0)
+        self.assertEqual(steps, 5)
+        self.assertAlmostEqual(engine.simulation_time, 0.005)
+
+    def test_advance_accumulates_remainder(self):
+        """子步余数累积到下一帧，不做随机补偿"""
+        engine = self._engine_with_bodies(dt=0.01, time_scale=1.0)
+        # 每帧 1/60 s：rate*dt_wall = 0.005 TU < dt=0.01 → 0 子步，余数保留
+        engine.advance(1.0 / 60.0)
+        self.assertEqual(engine.simulation_time, 0.0)
+        # 第二帧累积到 0.01 TU → 恰好 1 子步
+        engine.advance(1.0 / 60.0)
+        self.assertAlmostEqual(engine.simulation_time, 0.01)
+
+    def test_advance_caps_substeps_per_frame(self):
+        """高倍率/大墙钟时间下单帧子步数不超过上限（宁可慢不卡帧）"""
+        engine = self._engine_with_bodies(dt=0.001, time_scale=100.0)
+        steps = engine.advance(1.0)
+        self.assertLessEqual(steps, MAX_SUBSTEPS_PER_FRAME)
+        self.assertGreater(steps, 0)
+        self.assertLess(engine.simulation_time, steps * engine.dt + 1e-9)
+
+    def test_advance_nonpositive_wall_time(self):
+        engine = self._engine_with_bodies(time_scale=1.0)
+        self.assertEqual(engine.advance(0.0), 0)
+        self.assertEqual(engine.advance(-1.0), 0)
+        self.assertEqual(engine.simulation_time, 0.0)
 
 
 if __name__ == '__main__':

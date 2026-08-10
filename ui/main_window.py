@@ -6,6 +6,7 @@
 """
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QMenuBar, QMenu, QStatusBar, QLabel,
     QMessageBox, QToolBar, QPushButton, QFrame, QApplication,
-    QFileDialog, QInputDialog
+    QFileDialog, QInputDialog, QSlider
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
@@ -31,6 +32,11 @@ from .control_panel import ControlPanel
 from .add_body_dialog import AddBodyDialog
 from .styles import apply_global_style, apply_button_style, PANEL_STYLE
 from physics.scene_manager import SceneManager
+
+
+# 速度滑杆范围（对数刻度）
+SPEED_MIN = 0.1
+SPEED_MAX = 100.0
 
 
 class MainWindow(QMainWindow):
@@ -355,10 +361,9 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
-        # 时间缩放
-        toolbar.addWidget(QLabel("速度:"))
-        self.time_scale_combo = self._create_time_scale_combo()
-        toolbar.addWidget(self.time_scale_combo)
+        # 演进速度滑杆（对数刻度）
+        self.speed_control = self._create_speed_slider()
+        toolbar.addWidget(self.speed_control)
         
         toolbar.addSeparator()
         
@@ -370,24 +375,37 @@ class MainWindow(QMainWindow):
         self.mode_btn.clicked.connect(self._toggle_mode)
         toolbar.addWidget(self.mode_btn)
     
-    def _create_time_scale_combo(self):
-        """创建时间缩放下拉框"""
-        from PyQt6.QtWidgets import QComboBox
-        combo = QComboBox()
-        time_scales = [
-            ("0.1×", 0.1),
-            ("0.5×", 0.5),
-            ("1×", 1.0),
-            ("2×", 2.0),
-            ("5×", 5.0),
-            ("10×", 10.0),
-            ("100×", 100.0),
-        ]
-        for label, value in time_scales:
-            combo.addItem(label, value)
-        combo.setCurrentIndex(2)  # 默认 1×
-        combo.currentIndexChanged.connect(self._on_time_scale_changed)
-        return combo
+    def _create_speed_slider(self):
+        """创建对数刻度的速度滑杆（0.1× - 100×）"""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        layout.addWidget(QLabel("速度:"))
+
+        self.speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.speed_slider.setRange(0, 300)  # 100 位置 = 1×
+        self.speed_slider.setFixedWidth(150)
+        self.speed_slider.setToolTip("演进速度（对数刻度，1× = 旧版 5×）")
+        self.speed_slider.valueChanged.connect(self._on_speed_slider_changed)
+        layout.addWidget(self.speed_slider)
+
+        self.speed_label = QLabel("1×")
+        self.speed_label.setFixedWidth(48)
+        layout.addWidget(self.speed_label)
+
+        # 默认 1×（滑杆位置 100）
+        self.speed_slider.setValue(self._multiplier_to_slider(1.0))
+        return widget
+
+    def _slider_to_multiplier(self, pos: int) -> float:
+        """滑杆位置 -> 倍率（对数刻度）"""
+        return SPEED_MIN * (10.0 ** (pos / 100.0))
+
+    def _multiplier_to_slider(self, multiplier: float) -> int:
+        """倍率 -> 滑杆位置"""
+        return int(round(100.0 * math.log10(multiplier / SPEED_MIN)))
     
     def _setup_statusbar(self):
         """设置状态栏"""
@@ -426,10 +444,11 @@ class MainWindow(QMainWindow):
         """单步执行"""
         self.sim_widget.step()
     
-    def _on_time_scale_changed(self):
-        """时间缩放变化"""
-        value = self.time_scale_combo.currentData()
-        self.engine.time_scale = value
+    def _on_speed_slider_changed(self, pos: int):
+        """速度滑杆变化"""
+        multiplier = self._slider_to_multiplier(pos)
+        self.speed_label.setText(f"{multiplier:.3g}×")
+        self.engine.time_scale = multiplier
     
     def _on_add_body(self):
         """添加天体"""

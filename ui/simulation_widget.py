@@ -6,6 +6,8 @@ OpenGL 渲染视图，显示天体和轨迹
 增强视觉效果：星空背景、发光效果、轨迹渐变
 """
 
+import time
+
 import numpy as np
 import random
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
@@ -81,6 +83,7 @@ class SimulationWidget(QOpenGLWidget):
         self._animation_timer.timeout.connect(self._on_animation_tick)
         self._is_paused = False
         self._target_fps = 60
+        self._last_tick_time = None  # 墙钟时间（平滑步进用）
         
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     
@@ -147,6 +150,7 @@ class SimulationWidget(QOpenGLWidget):
     def start_animation(self):
         """启动动画"""
         interval = int(1000 / self._target_fps)
+        self._last_tick_time = time.perf_counter()
         self._animation_timer.start(interval)
     
     def stop_animation(self):
@@ -160,6 +164,7 @@ class SimulationWidget(QOpenGLWidget):
     def resume(self):
         """恢复"""
         self._is_paused = False
+        self._last_tick_time = None
     
     def step(self):
         """单步"""
@@ -169,7 +174,15 @@ class SimulationWidget(QOpenGLWidget):
     def _on_animation_tick(self):
         """动画回调"""
         if not self._is_paused:
-            self.engine.step()
+            now = time.perf_counter()
+            if self._last_tick_time is None:
+                wall_dt = 1.0 / self._target_fps
+            else:
+                wall_dt = now - self._last_tick_time
+                # 防止窗口卡顿/拖拽后一次性追赶过大
+                wall_dt = min(wall_dt, 0.1)
+            self._last_tick_time = now
+            self.engine.advance(wall_dt)
         self.update()
     
     def initializeGL(self):
@@ -294,39 +307,28 @@ class SimulationWidget(QOpenGLWidget):
             self._draw_trail(body)
     
     def _draw_trail(self, body: Body):
-        """绘制单个轨迹（渐变透明）"""
-        trail = body.trail[-self._max_trail_length:]
-        
+        """绘制单个轨迹（颜色 = 星体颜色，单条 GL_LINE_STRIP 渐变）"""
+        trail = list(body.trail)[-self._max_trail_length:]
+
         if len(trail) < 2:
             return
         
         color = body.color
         w = self.camera.viewport_width
         h = self.camera.viewport_height
-        
-        # 绘制渐变轨迹（颜色 = 星体对应颜色）
-        for i in range(len(trail) - 1):
-            # 计算透明度（越新越亮，保证颜色清晰可见）
-            alpha = 0.15 + 0.65 * (i / len(trail))
-            
+        n = len(trail)
+
+        gl.glLineWidth(1.5)
+        gl.glBegin(gl.GL_LINE_STRIP)
+        for i, point in enumerate(trail):
+            # 透明度渐变：越旧越透明，越新越亮
+            alpha = 0.15 + 0.65 * (i / n)
             gl.glColor4f(
                 float(color[0]), float(color[1]), float(color[2]), alpha
             )
-            gl.glLineWidth(1.5)
-            
-            # 转换为 NDC
-            sx1, sy1 = self.camera.world_to_screen(trail[i][0], trail[i][1])
-            sx2, sy2 = self.camera.world_to_screen(trail[i+1][0], trail[i+1][1])
-            
-            ndc_x1 = (sx1 / w) * 2.0 - 1.0
-            ndc_y1 = 1.0 - (sy1 / h) * 2.0
-            ndc_x2 = (sx2 / w) * 2.0 - 1.0
-            ndc_y2 = 1.0 - (sy2 / h) * 2.0
-            
-            gl.glBegin(gl.GL_LINES)
-            gl.glVertex2f(ndc_x1, ndc_y1)
-            gl.glVertex2f(ndc_x2, ndc_y2)
-            gl.glEnd()
+            sx, sy = self.camera.world_to_screen(point[0], point[1])
+            gl.glVertex2f((sx / w) * 2.0 - 1.0, 1.0 - (sy / h) * 2.0)
+        gl.glEnd()
     
     def _draw_overlay(self):
         """绘制 2D overlay（比例尺）"""

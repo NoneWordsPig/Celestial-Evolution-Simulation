@@ -6,10 +6,14 @@
 所有物理量使用模拟单位（Simulation Units）
 """
 
+from collections import deque
+
 import numpy as np
 from typing import List, Tuple
 from .body import Body
-from .constants import COLLISION_FACTOR, RADIUS_MERGE_EXPONENT
+from .constants import (
+    COLLISION_FACTOR, RADIUS_MERGE_EXPONENT, MAX_TRAJECTORY_LENGTH,
+)
 
 
 class CollisionHandler:
@@ -117,8 +121,11 @@ class CollisionHandler:
             render_radius=new_render_radius
         )
         
-        # 合并轨迹历史
-        merged.trail = body_a.trail + body_b.trail
+        # 合并轨迹历史（deque 自动截断到上限）
+        merged.trail = deque(
+            list(body_a.trail) + list(body_b.trail),
+            maxlen=MAX_TRAJECTORY_LENGTH,
+        )
         
         return merged
     

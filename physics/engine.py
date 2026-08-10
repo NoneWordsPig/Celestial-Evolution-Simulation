@@ -5,13 +5,18 @@
 管理世界状态和时间推进
 """
 
+from collections import deque
+
 import numpy as np
 from typing import List, Optional
 from .body import Body
 from .gravity import GravitySolver
 from .collision import CollisionHandler
 from .integrator import VelocityVerletIntegrator, RK4Integrator, IntegratorFactory
-from .constants import G, SOFTENING, DEFAULT_DT, MAX_TRAJECTORY_LENGTH
+from .constants import (
+    G, SOFTENING, DEFAULT_DT, MAX_TRAJECTORY_LENGTH,
+    BASE_SIMULATION_RATE, MAX_SUBSTEPS_PER_FRAME,
+)
 
 
 class PhysicsEngine:
@@ -51,12 +56,13 @@ class PhysicsEngine:
         self.bodies: List[Body] = []
         self.simulation_time: float = 0.0  # 模拟时间
         
-        # 全局轨迹历史（所有天体的轨迹点）
-        self.trajectory_history: List[np.ndarray] = []
+        # 全局轨迹历史（所有天体的轨迹点，deque 自动截断）
+        self.trajectory_history = deque(maxlen=MAX_TRAJECTORY_LENGTH)
         
         # 时间控制
         self.dt = dt
-        self.time_scale = time_scale
+        self._accumulator = 0.0  # 平滑步进余数（TU）
+        self.time_scale = time_scale  # 属性 setter 同步 simulation_rate
         
         # Velocity Verlet 需要的上一步加速度缓存
         self._cached_accelerations: Optional[np.ndarray] = None
@@ -90,8 +96,20 @@ class PhysicsEngine:
         """清空所有天体和轨迹"""
         self.bodies.clear()
         self.trajectory_history.clear()
+        self._accumulator = 0.0
         self.simulation_time = 0.0
         self._cached_accelerations = None
+
+    @property
+    def time_scale(self) -> float:
+        """时间倍率（1× = BASE_SIMULATION_RATE TU/s，即旧版 5×）"""
+        return self._time_scale
+
+    @time_scale.setter
+    def time_scale(self, value: float):
+        self._time_scale = float(value)
+        # 目标推进速率（TU/s），与 dt 解耦；数值精度由固定 dt 保证
+        self.simulation_rate = BASE_SIMULATION_RATE * self._time_scale
     
     def step(self) -> None:
         """
@@ -112,6 +130,32 @@ class PhysicsEngine:
         # 小数部分用概率补偿
         if np.random.random() < fractional_part:
             self._single_step()
+
+    def advance(self, wall_seconds: float) -> int:
+        """
+        按墙钟时间推进模拟（fixed timestep + accumulator）。
+
+        目标速率 = BASE_SIMULATION_RATE × time_scale（TU/s）；
+        每帧只执行固定 dt 的整数子步，余数累积到下一帧，运动平滑且精度不变。
+        单帧子步数不超过 MAX_SUBSTEPS_PER_FRAME，超出部分丢弃（宁可慢不卡帧）。
+
+        Args:
+            wall_seconds: 自上一帧以来的墙钟时间（秒）
+
+        Returns:
+            本帧实际执行的子步数
+        """
+        if wall_seconds <= 0.0:
+            return 0
+
+        self._accumulator += self.simulation_rate * wall_seconds
+        steps = int(self._accumulator / self.dt)
+        steps = min(steps, MAX_SUBSTEPS_PER_FRAME)
+        self._accumulator -= steps * self.dt
+
+        for _ in range(steps):
+            self._single_step()
+        return steps
     
     def _single_step(self) -> None:
         """
@@ -151,16 +195,9 @@ class PhysicsEngine:
         for body in self.bodies:
             # 记录个体轨迹
             body.trail.append(body.position.copy())
-            # 限制轨迹长度
-            if len(body.trail) > MAX_TRAJECTORY_LENGTH:
-                body.trail = body.trail[-MAX_TRAJECTORY_LENGTH:]
             
             # 记录到全局轨迹
             self.trajectory_history.append(body.position.copy())
-        
-        # 限制全局轨迹长度
-        if len(self.trajectory_history) > MAX_TRAJECTORY_LENGTH:
-            self.trajectory_history = self.trajectory_history[-MAX_TRAJECTORY_LENGTH:]
     
     def center_of_mass(self) -> np.ndarray:
         """

@@ -5,8 +5,12 @@
 使用模拟单位（Simulation Units）：G=1, MU=1, DU=1, TU=1
 """
 
+from collections import deque
+
 import numpy as np
 from typing import Tuple, Optional
+
+from .constants import MAX_TRAJECTORY_LENGTH
 
 
 class Body:
@@ -70,7 +74,8 @@ class Body:
         self.color = np.array(color, dtype=np.float32)
         
         # 轨迹历史（用于渲染）
-        self.trail: list = []
+        # 轨迹历史：deque 自动截断到上限，O(1) 追加/淘汰
+        self.trail = deque(maxlen=MAX_TRAJECTORY_LENGTH)
     
     @property
     def radius(self) -> float:

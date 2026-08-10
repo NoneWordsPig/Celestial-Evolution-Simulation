@@ -11,7 +11,7 @@
   "G": 1.0,
   "integrator": "rk4",
   "timestep": 0.001,
-  "time_scale": 20.0,
+  "time_scale": 4.0,
   "simulation_time": 0.0,
   "camera": {
     "center_x": 0.0,
