@@ -22,6 +22,12 @@ from physics import (
 )
 
 
+# 倍率上限检测窗口（帧数）与判定比例：
+# 仅在倍率切换后的检测窗口内采样，引擎持续撞单帧子步上限才提示。
+RATE_CHECK_FRAMES = 15
+RATE_CHECK_CAPPED_MIN_RATIO = 0.6
+
+
 class SimulationWidget(QOpenGLWidget):
     """
     OpenGL 模拟视图
@@ -37,6 +43,7 @@ class SimulationWidget(QOpenGLWidget):
     # 信号
     body_clicked = pyqtSignal(int)
     camera_changed = pyqtSignal()
+    rate_limit_detected = pyqtSignal()
     
     def __init__(
         self,
@@ -82,8 +89,13 @@ class SimulationWidget(QOpenGLWidget):
         self._animation_timer = QTimer(self)
         self._animation_timer.timeout.connect(self._on_animation_tick)
         self._is_paused = False
-        self._target_fps = 60
+        self._target_fps = 30
         self._last_tick_time = None  # 墙钟时间（平滑步进用）
+        # 倍率上限检测窗口状态（仅在倍率切换后的一次性窗口内采样）
+        self._fps_ema = float(self._target_fps)
+        self._rate_check_active = False
+        self._rate_check_frames = 0
+        self._rate_check_capped = 0
         
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     
@@ -183,7 +195,42 @@ class SimulationWidget(QOpenGLWidget):
                 wall_dt = min(wall_dt, 0.1)
             self._last_tick_time = now
             self.engine.advance(wall_dt)
+            self._update_rate_check(wall_dt)
         self.update()
+
+    def start_rate_check(self) -> None:
+        """
+        倍率切换后启动一次性帧率/上限检测窗口
+
+        仅在窗口内采样；检测“引擎是否持续撞单帧子步上限”，
+        若命中则发出 rate_limit_detected 信号（只提示，不修改任何设置）。
+        """
+        self._rate_check_active = True
+        self._rate_check_frames = RATE_CHECK_FRAMES
+        self._rate_check_capped = 0
+        self._fps_ema = float(self._target_fps)
+
+    def _update_rate_check(self, wall_dt: float) -> None:
+        """检测窗口内逐帧采样：实测帧率 + 引擎是否被单帧子步上限截断"""
+        if not self._rate_check_active:
+            return
+        if wall_dt <= 0.0:
+            return
+
+        inst_fps = 1.0 / wall_dt
+        self._fps_ema = 0.9 * self._fps_ema + 0.1 * inst_fps
+        if getattr(self.engine, "last_advance_capped", False):
+            self._rate_check_capped += 1
+
+        self._rate_check_frames -= 1
+        if self._rate_check_frames <= 0:
+            self._rate_check_active = False
+            # 关键：只有当引擎持续撞单帧上限（提高倍率已无法加速）才提示；
+            # 慢速倍率即使渲染帧率偏低也不算“上限”。
+            capped_ratio = self._rate_check_capped / RATE_CHECK_FRAMES
+            fps_lagging = self._fps_ema < self._target_fps
+            if capped_ratio >= RATE_CHECK_CAPPED_MIN_RATIO and fps_lagging:
+                self.rate_limit_detected.emit()
     
     def initializeGL(self):
         """初始化 OpenGL"""

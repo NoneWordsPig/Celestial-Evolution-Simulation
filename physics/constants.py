@@ -44,7 +44,9 @@ DEFAULT_DT = 0.001  # 约 60 FPS
 BASE_SIMULATION_RATE = 5.0 * 60.0 * DEFAULT_DT
 
 # 单帧最多执行的物理子步数（防止高倍率下单帧耗时过长导致卡顿）
-MAX_SUBSTEPS_PER_FRAME = 64
+# 20× 倍率 + 30 FPS 时需 200 子步/帧：
+#   BASE_SIMULATION_RATE(0.3 TU/s) × 20 / 30 FPS / 0.001 TU = 200
+MAX_SUBSTEPS_PER_FRAME = 200
 
 # ============================================================
 # 轨迹参数

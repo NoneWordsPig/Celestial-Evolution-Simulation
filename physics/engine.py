@@ -66,6 +66,8 @@ class PhysicsEngine:
         
         # Velocity Verlet 需要的上一步加速度缓存
         self._cached_accelerations: Optional[np.ndarray] = None
+        # 诊断标志：上一次 advance 是否因单帧子步上限被截断（供 UI 检测“倍率已达上限”）
+        self.last_advance_capped = False
     
     def add_body(self, body: Body) -> None:
         """
@@ -137,7 +139,8 @@ class PhysicsEngine:
 
         目标速率 = BASE_SIMULATION_RATE × time_scale（TU/s）；
         每帧只执行固定 dt 的整数子步，余数累积到下一帧，运动平滑且精度不变。
-        单帧子步数不超过 MAX_SUBSTEPS_PER_FRAME，超出部分丢弃（宁可慢不卡帧）。
+        单帧子步数不超过 MAX_SUBSTEPS_PER_FRAME，超出部分直接丢弃
+        （宁可慢不卡帧），避免 accumulator 无限积压导致从高倍速切回慢速失效。
 
         Args:
             wall_seconds: 自上一帧以来的墙钟时间（秒）
@@ -146,12 +149,20 @@ class PhysicsEngine:
             本帧实际执行的子步数
         """
         if wall_seconds <= 0.0:
+            self.last_advance_capped = False
             return 0
 
         self._accumulator += self.simulation_rate * wall_seconds
         steps = int(self._accumulator / self.dt)
-        steps = min(steps, MAX_SUBSTEPS_PER_FRAME)
-        self._accumulator -= steps * self.dt
+        if steps > MAX_SUBSTEPS_PER_FRAME:
+            # 超出单帧上限的部分直接丢弃；若保留在 accumulator 中，
+            # 高倍速运行产生的积压会让降速后仍长时间按上限速度推进。
+            steps = MAX_SUBSTEPS_PER_FRAME
+            self._accumulator = 0.0
+            self.last_advance_capped = True
+        else:
+            self._accumulator -= steps * self.dt
+            self.last_advance_capped = False
 
         for _ in range(steps):
             self._single_step()

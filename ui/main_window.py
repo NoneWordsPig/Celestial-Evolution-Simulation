@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QMenuBar, QMenu, QStatusBar, QLabel,
     QMessageBox, QToolBar, QPushButton, QFrame, QApplication,
-    QFileDialog, QInputDialog, QSlider
+    QFileDialog, QInputDialog, QSlider, QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
@@ -32,11 +32,18 @@ from .control_panel import ControlPanel
 from .add_body_dialog import AddBodyDialog
 from .styles import apply_global_style, apply_button_style, PANEL_STYLE
 from physics.scene_manager import SceneManager
+from .toast import Toast
 
 
 # 速度滑杆范围（对数刻度）
 SPEED_MIN = 0.1
-SPEED_MAX = 100.0
+SPEED_MAX = 20.0
+
+# 整数倍速预设档位
+SPEED_PRESETS = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
+
+# 倍率切换后的稳定等待时间，之后才执行一次“倍率已达上限”检测
+RATE_CHECK_DELAY_MS = 600
 
 
 class MainWindow(QMainWindow):
@@ -69,6 +76,11 @@ class MainWindow(QMainWindow):
 
         # 场景管理器（JSON 读写，不参与物理计算）
         self.scene_manager = SceneManager()
+
+        # 倍率切换后的上限检测定时器（仅在切换后做一次性检测）
+        self._rate_check_timer = QTimer(self)
+        self._rate_check_timer.setSingleShot(True)
+        self._rate_check_timer.timeout.connect(self._on_rate_check_timeout)
         
         # 跟随质心标志（默认关闭）
         self.follow_com = False
@@ -81,6 +93,10 @@ class MainWindow(QMainWindow):
         self._setup_menu()
         self._setup_toolbar()
         self._setup_statusbar()
+
+        # 帧率落后提示气泡（仅提示，不修改任何设置）
+        self.toast = Toast(self.centralWidget())
+
         self._connect_signals()
         
         # 启动动画
@@ -385,7 +401,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("速度:"))
 
         self.speed_slider = QSlider(Qt.Orientation.Horizontal)
-        self.speed_slider.setRange(0, 300)  # 100 位置 = 1×
+        # 对数刻度：0 位置 = 0.1×，100 位置 = 1×，230 位置 = 20×（SPEED_MAX）
+        self.speed_slider.setRange(0, self._multiplier_to_slider(SPEED_MAX))
+        # 轨道点击/方向键按 1 位置微调，保证任意方向都能平滑调节
+        self.speed_slider.setSingleStep(1)
+        self.speed_slider.setPageStep(1)
         self.speed_slider.setFixedWidth(150)
         self.speed_slider.setToolTip("演进速度（对数刻度，1× = 旧版 5×）")
         self.speed_slider.valueChanged.connect(self._on_speed_slider_changed)
@@ -395,17 +415,59 @@ class MainWindow(QMainWindow):
         self.speed_label.setFixedWidth(48)
         layout.addWidget(self.speed_label)
 
-        # 默认 1×（滑杆位置 100）
-        self.speed_slider.setValue(self._multiplier_to_slider(1.0))
+        # 整数倍速预设下拉框（选中后滑杆同步移动到对应位置）
+        self.speed_preset_combo = QComboBox()
+        for m in SPEED_PRESETS:
+            self.speed_preset_combo.addItem(f"{m:g}×", m)
+        self.speed_preset_combo.setFixedWidth(64)
+        self.speed_preset_combo.currentIndexChanged.connect(
+            self._on_speed_preset_changed
+        )
+        layout.addWidget(self.speed_preset_combo)
+
+        # 统一入口：引擎 + 滑杆 + 标签 + 预设同步到 1×
+        self._set_speed_control(1.0)
         return widget
 
     def _slider_to_multiplier(self, pos: int) -> float:
         """滑杆位置 -> 倍率（对数刻度）"""
+        if pos >= self._multiplier_to_slider(SPEED_MAX):
+            # 顶格位置精确归一到 SPEED_MAX（20×），避免对数刻度舍入出 19.95×
+            return SPEED_MAX
         return SPEED_MIN * (10.0 ** (pos / 100.0))
 
     def _multiplier_to_slider(self, multiplier: float) -> int:
         """倍率 -> 滑杆位置"""
         return int(round(100.0 * math.log10(multiplier / SPEED_MIN)))
+
+    def _nearest_preset_index(self, multiplier: float) -> int:
+        """距离当前倍率最近的预设档位下标（对数距离）"""
+        return min(
+            range(len(SPEED_PRESETS)),
+            key=lambda i: abs(math.log10(SPEED_PRESETS[i] / multiplier)),
+        )
+
+    def _set_speed_control(self, multiplier: float):
+        """
+        统一设置演进速度：引擎 + 滑杆位置 + 标签 + 预设档位。
+
+        滑块回写时 blockSignals，防止 setValue 触发 valueChanged 造成重入，
+        保证预设档位使用精确倍率而非滑杆取整值。
+        """
+        multiplier = float(multiplier)
+        self.engine.time_scale = multiplier
+        self.speed_label.setText(f"{multiplier:.3g}×")
+
+        self.speed_slider.blockSignals(True)
+        self.speed_slider.setValue(self._multiplier_to_slider(multiplier))
+        self.speed_slider.blockSignals(False)
+
+        self.speed_preset_combo.blockSignals(True)
+        self.speed_preset_combo.setCurrentIndex(self._nearest_preset_index(multiplier))
+        self.speed_preset_combo.blockSignals(False)
+
+        # 倍率切换后等待一段稳定期，再做一次上限检测（拖动过程中持续重启，松手后才检测）
+        self._rate_check_timer.start(RATE_CHECK_DELAY_MS)
     
     def _setup_statusbar(self):
         """设置状态栏"""
@@ -430,6 +492,9 @@ class MainWindow(QMainWindow):
         
         # 模拟视图
         self.sim_widget.body_clicked.connect(self._on_body_clicked)
+
+        # 倍率切换后检测到“已达上限” -> 仅提示，不修改任何设置
+        self.sim_widget.rate_limit_detected.connect(self._on_rate_limit)
     
     def _on_play_pause(self):
         """播放/暂停"""
@@ -446,9 +511,13 @@ class MainWindow(QMainWindow):
     
     def _on_speed_slider_changed(self, pos: int):
         """速度滑杆变化"""
-        multiplier = self._slider_to_multiplier(pos)
-        self.speed_label.setText(f"{multiplier:.3g}×")
-        self.engine.time_scale = multiplier
+        self._set_speed_control(self._slider_to_multiplier(pos))
+
+    def _on_speed_preset_changed(self, index: int):
+        """预设倍速选择：滑块移动到对应位置，引擎使用精确倍率"""
+        if index < 0:
+            return
+        self._set_speed_control(self.speed_preset_combo.itemData(index))
     
     def _on_add_body(self):
         """添加天体"""
@@ -514,6 +583,8 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             QMessageBox.warning(self, "加载场景失败", str(exc))
             return
+        # 场景中的 time_scale 同步到滑杆/标签/预设档位
+        self._set_speed_control(self.engine.time_scale)
         self.body_list.refresh()
         self.inspector.select_body(-1)
         self.inspector.refresh()
@@ -554,6 +625,16 @@ class MainWindow(QMainWindow):
         self.body_list.list_widget.setCurrentRow(index)
         self.inspector.select_body(index)
         self.inspector.refresh()
+
+    def _on_rate_check_timeout(self):
+        """倍率稳定后执行一次上限检测（仅提示，不修改任何设置）"""
+        self.sim_widget.start_rate_check()
+
+    def _on_rate_limit(self):
+        """当前倍率下引擎已撞单帧子步上限：提高倍率不再加速，仅弹窗告知"""
+        if self.toast.is_showing:
+            return
+        self.toast.show_message("倍率已达上限", 5000)
     
     def _on_delete_body(self, index: int):
         """删除天体"""
@@ -658,7 +739,7 @@ class MainWindow(QMainWindow):
     
     def _update_status(self):
         """更新状态栏"""
-        self.fps_label.setText("FPS: ~60")
+        self.fps_label.setText("FPS: ~30")
         self.body_count_label.setText(f"天体: {len(self.engine.bodies)}")
         
         if self.mode == Mode.SIMULATION:
