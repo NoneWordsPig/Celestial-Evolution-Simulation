@@ -65,7 +65,8 @@ class MainWindow(QMainWindow):
         
         # 核心组件
         self.engine = PhysicsEngine(integrator_type='rk4', dt=0.001, time_scale=1.0)
-        self.camera = Camera(viewport_width=800, viewport_height=600, zoom=10.0)
+        # Figure-8 三体系统初始视野（与 scenes/figure8.json 的相机设置一致）
+        self.camera = Camera(viewport_width=800, viewport_height=600, zoom=150.0)
         
         # 参考系和过渡管理
         self.reference_frame = ReferenceFrame()
@@ -143,32 +144,43 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(PANEL_STYLE)
     
     def _add_demo_bodies(self):
-        """添加示例天体"""
+        """添加示例天体：Figure-8 三体系统（与 scenes/figure8.json 相同，星体大小用默认 1e-4）"""
         from physics import Body
-        
-        # 中心恒星
-        star = Body(
-            name="Star",
-            mass=1000.0,
-            physical_radius=5.0,
-            render_radius=5.0,
-            position=(0.0, 0.0),
-            velocity=(0.0, 0.0),
-            color=(1.0, 0.8, 0.0)
-        )
-        self.engine.add_body(star)
-        
-        # 行星
-        planet = Body(
-            name="Planet",
-            mass=1.0,
-            physical_radius=1.0,
-            render_radius=1.0,
-            position=(10.0, 0.0),
-            velocity=(0.0, 10.0),
-            color=(0.3, 0.5, 1.0)
-        )
-        self.engine.add_body(planet)
+
+        # 默认星体大小（与“添加天体”对话框的默认半径一致）
+        default_radius = 1e-4
+
+        figure8_bodies = [
+            Body(
+                name="Body 1",
+                mass=1.0,
+                physical_radius=default_radius,
+                render_radius=default_radius,
+                position=(-0.97000436, 0.24308753),
+                velocity=(0.46620368, 0.43236573),
+                color=(1.0, 0.3, 0.3),
+            ),
+            Body(
+                name="Body 2",
+                mass=1.0,
+                physical_radius=default_radius,
+                render_radius=default_radius,
+                position=(0.97000436, -0.24308753),
+                velocity=(0.46620368, 0.43236573),
+                color=(0.3, 1.0, 0.3),
+            ),
+            Body(
+                name="Body 3",
+                mass=1.0,
+                physical_radius=default_radius,
+                render_radius=default_radius,
+                position=(0.0, 0.0),
+                velocity=(-0.93240737, -0.86473146),
+                color=(0.3, 0.3, 1.0),
+            ),
+        ]
+        for body in figure8_bodies:
+            self.engine.add_body(body)
     
     def _setup_ui(self):
         """设置 UI - 优化布局"""

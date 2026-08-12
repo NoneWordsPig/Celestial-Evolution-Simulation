@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "name": "太阳系全系",
-  "description": "太阳与八大行星真实 N 体模拟，行星从近日点出发（真实质量/半径/轨道元素，经 UnitSystem 归一化：1 DU = 1 AU，1 MU = 1 M_sun）。",
+  "description": "太阳、八大行星与月球的真实 N 体模拟，行星从近日点出发（真实质量/半径/轨道元素，经 UnitSystem 归一化：1 DU = 1 AU，1 MU = 1 M_sun）。",
   "units": {
     "length": "AU",
     "mass": "M_sun",
@@ -11,7 +11,7 @@
   "G": 1.0,
   "integrator": "rk4",
   "timestep": 0.001,
-  "time_scale": 4.0,
+  "time_scale": 1.0,
   "simulation_time": 0.0,
   "camera": {
     "center_x": 0.0,
@@ -56,6 +56,15 @@
       "position": [0.2544941788588576, 0.9497852057317779],
       "velocity": [-0.9822050585727711, 0.2631810522463376],
       "color": [0.3, 0.6, 1.0]
+    },
+    {
+      "name": "Moon",
+      "mass": 3.6913e-08,
+      "radius": 1.16137e-05,
+      "render_radius": 1.16137e-05,
+      "position": [0.2570636788588576, 0.9497852057317779],
+      "velocity": [-0.9822050585727711, 0.2973660522463376],
+      "color": [0.8, 0.8, 0.8]
     },
     {
       "name": "Mars",
