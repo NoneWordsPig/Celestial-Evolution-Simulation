@@ -38,6 +38,16 @@ PROFILER_RENDER = QColor(6, 182, 212)    # 青
 PROFILER_WARN = QColor(245, 158, 11)     # 琥珀（Unaccounted Time/瓶颈）
 PROFILER_TREND = QColor(34, 211, 238)    # 趋势线亮青
 
+# 预计算单位圆顶点（32 段，含闭合点），避免每帧每体重复三角函数
+_CIRCLE_SEGMENTS = 32
+_UNIT_CIRCLE = tuple(
+    (
+        np.cos(2.0 * np.pi * j / _CIRCLE_SEGMENTS),
+        np.sin(2.0 * np.pi * j / _CIRCLE_SEGMENTS),
+    )
+    for j in range(_CIRCLE_SEGMENTS + 1)
+)
+
 
 class SimulationWidget(QOpenGLWidget):
     """
@@ -84,7 +94,12 @@ class SimulationWidget(QOpenGLWidget):
         # 渲染参数
         self.min_render_radius_px = 3.0
         self._show_trails = True
-        self._max_trail_length = 500
+        # 轨迹渲染采样上限：完整轨迹保存在引擎，渲染最多绘制该点数（均匀采样）
+        self.trail_render_sampling = 1000
+
+        # 性能覆盖层缓存（summary/行数据约 10 Hz 刷新，避免每帧重算）
+        self._overlay_cache = None
+        self._overlay_fonts = None
         
         # 选中的天体索引
         self._selected_body_index = -1
@@ -287,31 +302,23 @@ class SimulationWidget(QOpenGLWidget):
         ndc_ry = screen_radius / h * 2.0
         
         color = body.color
-        segments = 32
-        
-        # 1. 柔和外发光（单层，低透明度）
-        glow_radius_mult = 1.3
+        glow_rx = ndc_rx * 1.3
+        glow_ry = ndc_ry * 1.3
+
+        # 1. 柔和外发光（单层，低透明度，复用预计算单位圆）
         gl.glColor4f(color[0], color[1], color[2], 0.15)
         gl.glBegin(gl.GL_TRIANGLE_FAN)
         gl.glVertex2f(ndc_x, ndc_y)
-        for j in range(segments + 1):
-            angle = 2.0 * np.pi * j / segments
-            gl.glVertex2f(
-                ndc_x + ndc_rx * glow_radius_mult * np.cos(angle),
-                ndc_y + ndc_ry * glow_radius_mult * np.sin(angle)
-            )
+        for ux, uy in _UNIT_CIRCLE:
+            gl.glVertex2f(ndc_x + glow_rx * ux, ndc_y + glow_ry * uy)
         gl.glEnd()
         
         # 2. 主体圆形（实心）
         gl.glColor4f(color[0], color[1], color[2], 1.0)
         gl.glBegin(gl.GL_TRIANGLE_FAN)
         gl.glVertex2f(ndc_x, ndc_y)
-        for j in range(segments + 1):
-            angle = 2.0 * np.pi * j / segments
-            gl.glVertex2f(
-                ndc_x + ndc_rx * np.cos(angle),
-                ndc_y + ndc_ry * np.sin(angle)
-            )
+        for ux, uy in _UNIT_CIRCLE:
+            gl.glVertex2f(ndc_x + ndc_rx * ux, ndc_y + ndc_ry * uy)
         gl.glEnd()
         
         # 3. 选中光环（保留，仅选中时显示）
@@ -319,12 +326,8 @@ class SimulationWidget(QOpenGLWidget):
             gl.glColor4f(1.0, 1.0, 1.0, 0.8)
             gl.glLineWidth(2.0)
             gl.glBegin(gl.GL_LINE_LOOP)
-            for j in range(segments):
-                angle = 2.0 * np.pi * j / segments
-                gl.glVertex2f(
-                    ndc_x + ndc_rx * 1.4 * np.cos(angle),
-                    ndc_y + ndc_ry * 1.4 * np.sin(angle)
-                )
+            for ux, uy in _UNIT_CIRCLE[:-1]:
+                gl.glVertex2f(ndc_x + ndc_rx * 1.4 * ux, ndc_y + ndc_ry * 1.4 * uy)
             gl.glEnd()
 
     def _draw_trails(self):
@@ -336,27 +339,47 @@ class SimulationWidget(QOpenGLWidget):
     
     def _draw_trail(self, body: Body):
         """绘制单个轨迹（颜色 = 星体颜色，单条 GL_LINE_STRIP 渐变）"""
-        trail = list(body.trail)[-self._max_trail_length:]
-
-        if len(trail) < 2:
+        pts = self._sample_trail(list(body.trail), self.trail_render_sampling)
+        n = len(pts)
+        if n < 2:
             return
-        
+
         color = body.color
         w = self.camera.viewport_width
         h = self.camera.viewport_height
-        n = len(trail)
+        m = len(pts)
+
+        # 一次性向量化世界坐标 -> NDC（避免逐点 Python 坐标转换与临时对象）
+        arr = np.asarray(pts, dtype=np.float64)
+        ndc = np.empty((m, 2), dtype=np.float64)
+        cam = self.camera
+        ndc[:, 0] = (
+            (arr[:, 0] - cam.center_x) * cam.zoom + w * 0.5
+        ) / w * 2.0 - 1.0
+        ndc[:, 1] = 1.0 - (
+            -(arr[:, 1] - cam.center_y) * cam.zoom + h * 0.5
+        ) / h * 2.0
+        alphas = 0.15 + 0.65 * np.linspace(0.0, 1.0, m)
 
         gl.glLineWidth(1.5)
         gl.glBegin(gl.GL_LINE_STRIP)
-        for i, point in enumerate(trail):
-            # 透明度渐变：越旧越透明，越新越亮
-            alpha = 0.15 + 0.65 * (i / n)
+        for i in range(m):
             gl.glColor4f(
-                float(color[0]), float(color[1]), float(color[2]), alpha
+                float(color[0]), float(color[1]), float(color[2]), alphas[i]
             )
-            sx, sy = self.camera.world_to_screen(point[0], point[1])
-            gl.glVertex2f((sx / w) * 2.0 - 1.0, 1.0 - (sy / h) * 2.0)
+            gl.glVertex2f(ndc[i, 0], ndc[i, 1])
         gl.glEnd()
+
+    @staticmethod
+    def _sample_trail(pts: list, max_points: int) -> list:
+        """均匀采样轨迹：保留完整数据，渲染最多 max_points 个连续采样点。"""
+        n = len(pts)
+        if n <= max_points:
+            return pts
+        step = n / max_points
+        indices = [int(n - 1 - i * step) for i in range(max_points)]
+        indices.reverse()
+        return [pts[i] for i in indices]
     
     def _draw_overlay(self):
         """绘制 2D overlay（比例尺 + 性能分析，均为只读覆盖层）"""
@@ -408,18 +431,27 @@ class SimulationWidget(QOpenGLWidget):
         """在模拟视图左上角绘制性能统计覆盖层（只读，不修改任何状态）。"""
         if self._profiler is None or not self._show_profiler_overlay:
             return
-        summary = self._profiler.summary()
-        if summary is None:
-            return
+        now = time.perf_counter()
+        cache = self._overlay_cache
+        # 性能数据独立刷新：约 10 Hz 重算统计，其余帧直接复用缓存
+        if cache is None or now - cache[0] >= 0.1:
+            summary = self._profiler.summary()
+            if summary is None:
+                return
+            periods = self._profiler.frame_period_history_ms()
+            self._overlay_cache = (
+                now, summary, self._profiler_rows(summary, periods)
+            )
+        _, summary, rows = self._overlay_cache
 
-        periods = self._profiler.frame_period_history_ms()
-        rows = self._profiler_rows(summary, periods)
-
-        title_font = QFont("Consolas")
-        title_font.setPointSize(10)
-        title_font.setBold(True)
-        body_font = QFont("Consolas")
-        body_font.setPointSize(9)
+        if self._overlay_fonts is None:
+            title_font = QFont("Consolas")
+            title_font.setPointSize(10)
+            title_font.setBold(True)
+            body_font = QFont("Consolas")
+            body_font.setPointSize(9)
+            self._overlay_fonts = (title_font, body_font)
+        title_font, body_font = self._overlay_fonts
 
         # 先测量：面板内容宽度取最宽一行的“标签 + 值 + 间距”
         cell_pad = 28

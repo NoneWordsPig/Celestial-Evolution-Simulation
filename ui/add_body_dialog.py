@@ -99,7 +99,7 @@ class AddBodyDialog(QDialog):
         
         # 半径
         self.radius_spin = ScientificNumberInput(
-            value=0.1, min_value=1e-30, max_value=1e12,
+            value=1e-4, min_value=1e-30, max_value=1e12,
             suffix=" DU" if self.mode == Mode.SIMULATION else ""
         )
 
@@ -119,7 +119,7 @@ class AddBodyDialog(QDialog):
         pos_layout = QFormLayout()
         
         self.pos_x_spin = ScientificNumberInput(
-            value=10.0, min_value=-1e18, max_value=1e18,
+            value=0.0, min_value=-1e18, max_value=1e18,
             suffix=" DU" if self.mode == Mode.SIMULATION else ""
         )
         self.pos_y_spin = ScientificNumberInput(
@@ -181,7 +181,7 @@ class AddBodyDialog(QDialog):
             suffix=" DU/TU" if self.mode == Mode.SIMULATION else ""
         )
         self.vy_spin = ScientificNumberInput(
-            value=10.0, min_value=-1e12, max_value=1e12,
+            value=0.0, min_value=-1e12, max_value=1e12,
             suffix=" DU/TU" if self.mode == Mode.SIMULATION else ""
         )
 
@@ -206,11 +206,11 @@ class AddBodyDialog(QDialog):
         polar_layout = QFormLayout()
         
         self.speed_spin = ScientificNumberInput(
-            value=10.0, min_value=0.0, max_value=1e12,
+            value=0.0, min_value=0.0, max_value=1e12,
             suffix=" DU/TU" if self.mode == Mode.SIMULATION else ""
         )
         self.direction_spin = ScientificNumberInput(
-            value=90.0, min_value=-360.0, max_value=360.0, suffix="°"
+            value=0.0, min_value=-360.0, max_value=360.0, suffix="°"
         )
 
         if self.mode == Mode.SCIENTIFIC:

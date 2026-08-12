@@ -108,6 +108,11 @@ class MainWindow(QMainWindow):
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_status)
         self._status_timer.start(100)
+
+        # 检查器 10 Hz 刷新（未选中时为空操作），避免高频重建
+        self._inspector_timer = QTimer(self)
+        self._inspector_timer.timeout.connect(self._refresh_inspector)
+        self._inspector_timer.start(100)
         
         # 参考系更新定时器
         self._ref_frame_timer = QTimer(self)
@@ -774,7 +779,11 @@ class MainWindow(QMainWindow):
 
     def _update_status(self):
         """更新状态栏"""
-        self.fps_label.setText("FPS: ~30")
+        summary = self.profiler.summary()
+        if summary is not None:
+            self.fps_label.setText(f"FPS: {summary['fps']:.0f}")
+        else:
+            self.fps_label.setText("FPS: --")
         self.body_count_label.setText(f"天体: {len(self.engine.bodies)}")
         
         if self.mode == Mode.SIMULATION:
@@ -788,6 +797,10 @@ class MainWindow(QMainWindow):
         # 更新质心显示
         com = self.reference_frame.center_of_mass
         self.com_label.setText(f"质心: ({com[0]:.2f}, {com[1]:.2f})")
+
+    def _refresh_inspector(self):
+        """10 Hz 刷新检查器（无选中天体时为空操作）。"""
+        self.inspector.refresh()
     
     def _update_reference_frame(self):
         """更新参考系"""
