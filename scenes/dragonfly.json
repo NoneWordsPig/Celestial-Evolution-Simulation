@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "name": "Figure-8 三体系统",
-  "description": "经典 Figure-8 稳定周期轨道（Chenciner & Montgomery, 2000），三体等质量 m=1、G=1，周期 T≈6.32591398。初值保留 10 位小数；该轨道是目前已知少数线性稳定的三体周期解之一。",
+  "name": "蜻蜓轨道 Dragonfly",
+  "description": "三体等质量周期特解 Dragonfly（Šuvakov & Dmitrašinović, 2013, arXiv:1303.0181 表 1）。m=1、G=1、零角动量，特征周期 T≈21.27233739。初值在论文 5–6 位小数基础上经数值精修至闭合误差 ~1e-10；该特解线性不稳定，适合观赏一到数个周期。",
   "units": {
     "length": "DU",
     "mass": "MU",
@@ -10,7 +10,7 @@
   },
   "G": 1.0,
   "integrator": "rk4",
-  "timestep": 0.0005,
+  "timestep": 0.00005,
   "time_scale": 1.0,
   "simulation_time": 0.0,
   "camera": {
@@ -26,8 +26,8 @@
       "mass": 1.0,
       "radius": 0.0001,
       "render_radius": 0.0001,
-      "position": [-0.97000436, 0.24308753],
-      "velocity": [0.4662036850, 0.4323657300],
+      "position": [-1.0, 0.0],
+      "velocity": [0.080584225542841, 0.588836089782331],
       "color": [1.0, 0.3, 0.3]
     },
     {
@@ -35,8 +35,8 @@
       "mass": 1.0,
       "radius": 0.0001,
       "render_radius": 0.0001,
-      "position": [0.97000436, -0.24308753],
-      "velocity": [0.4662036850, 0.4323657300],
+      "position": [1.0, 0.0],
+      "velocity": [0.080584225542841, 0.588836089782331],
       "color": [0.3, 1.0, 0.3]
     },
     {
@@ -45,7 +45,7 @@
       "radius": 0.0001,
       "render_radius": 0.0001,
       "position": [0.0, 0.0],
-      "velocity": [-0.9324073700, -0.8647314600],
+      "velocity": [-0.161168451085682, -1.177672179564662],
       "color": [0.3, 0.3, 1.0]
     }
   ]
