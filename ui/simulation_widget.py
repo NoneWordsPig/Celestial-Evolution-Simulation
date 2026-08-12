@@ -3,16 +3,15 @@
 
 OpenGL 渲染视图，显示天体和轨迹
 添加比例尺显示和参考系支持
-增强视觉效果：星空背景、发光效果、轨迹渐变
+纯黑背景 + 发光效果、轨迹渐变
 """
 
 import time
 
 import numpy as np
-import random
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QMouseEvent, QWheelEvent, QPainter, QPen, QFont, QRadialGradient, QColor
+from PyQt6.QtGui import QMouseEvent, QWheelEvent, QPainter, QPen, QFont, QColor
 import OpenGL.GL as gl
 
 from physics import (
@@ -47,7 +46,7 @@ class SimulationWidget(QOpenGLWidget):
     负责：
     - 渲染天体（正圆 + 发光效果）
     - 渲染轨迹（渐变透明）
-    - 渲染星空背景
+    - 纯黑背景
     - 渲染比例尺
     - 处理鼠标交互
     """
@@ -90,13 +89,6 @@ class SimulationWidget(QOpenGLWidget):
         # 选中的天体索引
         self._selected_body_index = -1
         
-        # 星空背景配置
-        self.background_star_density = 60  # 星星数量（减少）
-        self.background_star_brightness = 0.3  # 最大亮度（降低）
-        self.background_star_size = 0.8  # 最大尺寸（减小）
-        self._stars = []
-        self._init_stars()
-        
         # 动画
         self._animation_timer = QTimer(self)
         self._animation_timer.timeout.connect(self._on_animation_tick)
@@ -115,19 +107,6 @@ class SimulationWidget(QOpenGLWidget):
         
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     
-    def _init_stars(self):
-        """初始化星空背景 - 优化的低调星空"""
-        self._stars = []
-        for _ in range(self.background_star_density):
-            # 随机位置
-            x = random.random()
-            y = random.random()
-            # 降低亮度范围：0.05 到 background_star_brightness
-            brightness = random.uniform(0.05, self.background_star_brightness)
-            # 减小尺寸范围：0.3 到 background_star_size
-            size = random.uniform(0.3, self.background_star_size)
-            self._stars.append((x, y, brightness, size))
-    
     def set_mode(self, mode: Mode, unit_system: UnitSystem = None, converter: UnitConverter = None):
         """设置模式"""
         self.mode = mode
@@ -135,44 +114,6 @@ class SimulationWidget(QOpenGLWidget):
             self.unit_system = unit_system
         if converter is not None:
             self.converter = converter
-        self.update()
-    
-
-    def set_background_star_density(self, density: int):
-        """设置背景星星密度"""
-        self.background_star_density = max(10, min(200, density))
-        self._init_stars()
-        self.update()
-    
-    def set_background_star_brightness(self, brightness: float):
-        """设置背景星星亮度"""
-        self.background_star_brightness = max(0.05, min(0.5, brightness))
-        self._init_stars()
-        self.update()
-    
-    def set_background_star_size(self, size: float):
-        """设置背景星星尺寸"""
-        self.background_star_size = max(0.3, min(1.5, size))
-        self._init_stars()
-        self.update()
-
-
-    def set_background_star_density(self, density: int):
-        """设置背景星星密度"""
-        self.background_star_density = max(10, min(200, density))
-        self._init_stars()
-        self.update()
-    
-    def set_background_star_brightness(self, brightness: float):
-        """设置背景星星亮度"""
-        self.background_star_brightness = max(0.05, min(0.5, brightness))
-        self._init_stars()
-        self.update()
-    
-    def set_background_star_size(self, size: float):
-        """设置背景星星尺寸"""
-        self.background_star_size = max(0.3, min(1.5, size))
-        self._init_stars()
         self.update()
 
     def start_animation(self):
@@ -263,7 +204,7 @@ class SimulationWidget(QOpenGLWidget):
     
     def initializeGL(self):
         """初始化 OpenGL"""
-        gl.glClearColor(0.02, 0.02, 0.05, 1.0)  # 深空背景
+        gl.glClearColor(0.0, 0.0, 0.0, 1.0)  # 纯黑背景
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glEnable(gl.GL_LINE_SMOOTH)
@@ -281,11 +222,6 @@ class SimulationWidget(QOpenGLWidget):
             t0 = time.perf_counter()
 
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-        
-        if profiler is not None:
-            t_star = time.perf_counter()
-        # 绘制星空背景
-        self._draw_starfield()
         
         if profiler is not None:
             t_trails = time.perf_counter()
@@ -307,28 +243,10 @@ class SimulationWidget(QOpenGLWidget):
             t_end = time.perf_counter()
             profiler.add_render_parts(
                 render=(t_end - t0) * 1000.0,
-                star=(t_trails - t_star) * 1000.0,
                 trails=(t_bodies - t_trails) * 1000.0,
                 render_bodies=(t_overlay - t_bodies) * 1000.0,
                 overlay=(t_end - t_overlay) * 1000.0,
             )
-    
-    def _draw_starfield(self):
-        """绘制星空背景 - 优化的低调星空"""
-        if not self._stars:
-            return
-        
-        # 批量绘制所有星星（性能优化）
-        gl.glBegin(gl.GL_POINTS)
-        for x, y, brightness, size in self._stars:
-            # 转换为 NDC
-            ndc_x = x * 2.0 - 1.0
-            ndc_y = 1.0 - y * 2.0
-            
-            # 设置颜色和尺寸
-            gl.glColor4f(1.0, 1.0, 1.0, brightness)
-            gl.glVertex2f(ndc_x, ndc_y)
-        gl.glEnd()
     
     def _draw_bodies(self):
         """绘制所有天体"""
