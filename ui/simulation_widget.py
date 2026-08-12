@@ -27,6 +27,18 @@ from physics import (
 RATE_CHECK_FRAMES = 15
 RATE_CHECK_CAPPED_MIN_RATIO = 0.6
 
+# 性能分析覆盖层配色（与深色主题一致）
+PROFILER_BG = QColor(10, 14, 26, 190)
+PROFILER_BORDER = QColor(45, 51, 72)
+PROFILER_TITLE = QColor(99, 102, 241)
+PROFILER_LABEL = QColor(156, 163, 175)
+PROFILER_VALUE = QColor(229, 231, 235)
+PROFILER_PHYSICS = QColor(99, 102, 241)  # 靛蓝
+PROFILER_UI = QColor(139, 92, 246)       # 紫
+PROFILER_RENDER = QColor(6, 182, 212)    # 青
+PROFILER_WARN = QColor(245, 158, 11)     # 琥珀（Other/瓶颈）
+PROFILER_TREND = QColor(34, 211, 238)    # 趋势线亮青
+
 
 class SimulationWidget(QOpenGLWidget):
     """
@@ -96,6 +108,10 @@ class SimulationWidget(QOpenGLWidget):
         self._rate_check_active = False
         self._rate_check_frames = 0
         self._rate_check_capped = 0
+        # 性能分析器（由 MainWindow 挂接，只计时不改状态/算法）
+        self._profiler = None
+        # 左上角性能分析覆盖层是否可见（视图菜单控制）
+        self._show_profiler_overlay = True
         
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     
@@ -168,6 +184,15 @@ class SimulationWidget(QOpenGLWidget):
     def stop_animation(self):
         """停止动画"""
         self._animation_timer.stop()
+
+    def set_profiler(self, profiler) -> None:
+        """挂接性能分析器（驱动帧计时，并上报渲染各子阶段耗时）。"""
+        self._profiler = profiler
+
+    def set_profiler_overlay_visible(self, visible: bool) -> None:
+        """显示/隐藏左上角性能分析覆盖层（仅影响显示，不改任何状态）。"""
+        self._show_profiler_overlay = bool(visible)
+        self.update()
     
     def pause(self):
         """暂停"""
@@ -185,6 +210,10 @@ class SimulationWidget(QOpenGLWidget):
     
     def _on_animation_tick(self):
         """动画回调"""
+        profiler = self._profiler
+        if profiler is not None:
+            # 结束上一帧（含渲染/UI 耗时）并开始新一帧
+            profiler.frame_start()
         if not self._is_paused:
             now = time.perf_counter()
             if self._last_tick_time is None:
@@ -247,20 +276,42 @@ class SimulationWidget(QOpenGLWidget):
     
     def paintGL(self):
         """渲染"""
+        profiler = self._profiler
+        if profiler is not None:
+            t0 = time.perf_counter()
+
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
         
+        if profiler is not None:
+            t_star = time.perf_counter()
         # 绘制星空背景
         self._draw_starfield()
         
+        if profiler is not None:
+            t_trails = time.perf_counter()
         # 绘制轨迹
         if self._show_trails:
             self._draw_trails()
         
+        if profiler is not None:
+            t_bodies = time.perf_counter()
         # 绘制天体
         self._draw_bodies()
         
+        if profiler is not None:
+            t_overlay = time.perf_counter()
         # 使用 QPainter 绘制 2D overlay（比例尺）
         self._draw_overlay()
+
+        if profiler is not None:
+            t_end = time.perf_counter()
+            profiler.add_render_parts(
+                render=(t_end - t0) * 1000.0,
+                star=(t_trails - t_star) * 1000.0,
+                trails=(t_bodies - t_trails) * 1000.0,
+                render_bodies=(t_overlay - t_bodies) * 1000.0,
+                overlay=(t_end - t_overlay) * 1000.0,
+            )
     
     def _draw_starfield(self):
         """绘制星空背景 - 优化的低调星空"""
@@ -378,12 +429,15 @@ class SimulationWidget(QOpenGLWidget):
         gl.glEnd()
     
     def _draw_overlay(self):
-        """绘制 2D overlay（比例尺）"""
+        """绘制 2D overlay（比例尺 + 性能分析，均为只读覆盖层）"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         
         # 绘制比例尺
         self._draw_scale_bar(painter)
+
+        # 绘制性能分析（左上角覆盖层，不改变 UI 排版）
+        self._draw_profiler_stats(painter)
         
         painter.end()
     
@@ -419,6 +473,215 @@ class SimulationWidget(QOpenGLWidget):
         text_width = painter.fontMetrics().horizontalAdvance(label)
         text_x = x + (pixel_len - text_width) / 2
         painter.drawText(int(text_x), int(y - 10), label)
+
+    def _draw_profiler_stats(self, painter: QPainter):
+        """在模拟视图左上角绘制性能统计覆盖层（只读，不修改任何状态）。"""
+        if self._profiler is None or not self._show_profiler_overlay:
+            return
+        summary = self._profiler.summary()
+        if summary is None:
+            return
+
+        periods = self._profiler.frame_period_history_ms()
+        rows = self._profiler_rows(summary, periods)
+
+        title_font = QFont("Consolas")
+        title_font.setPointSize(10)
+        title_font.setBold(True)
+        body_font = QFont("Consolas")
+        body_font.setPointSize(9)
+
+        # 先测量：面板内容宽度取最宽一行的“标签 + 值 + 间距”
+        cell_pad = 28
+        painter.setFont(title_font)
+        title_fm = painter.fontMetrics()
+        content_w = title_fm.horizontalAdvance(rows[0]['title'])
+        title_h = title_fm.height() + 10
+        painter.setFont(body_font)
+        fm = painter.fontMetrics()
+        for row in rows:
+            if row['type'] == 'metrics':
+                need = sum(
+                    fm.horizontalAdvance(label) + fm.horizontalAdvance(value)
+                    for label, value in row['items']
+                ) + cell_pad * len(row['items'])
+                content_w = max(content_w, need)
+            elif row['type'] == 'table':
+                row['label_w'] = max(
+                    fm.horizontalAdvance(r[0]) for r in row['rows']
+                )
+                row['ms_w'] = max(
+                    fm.horizontalAdvance(f"{r[1]:.1f}ms") for r in row['rows']
+                )
+                row['pct_w'] = max(
+                    fm.horizontalAdvance(f"{r[2]:.1f}%") for r in row['rows']
+                )
+                need = row['label_w'] + 12 + row['ms_w'] + 8 + row['pct_w'] + 70
+                content_w = max(content_w, need)
+
+        margin = 10
+        x = 12
+        y = 12
+        panel_w = content_w + margin * 2
+
+        # 行高与面板高度（标题下方留出额外间距）
+        metrics_h = fm.height() + 5
+        table_row_h = fm.height() + 2
+        spark_h = 26
+        panel_h = margin
+        for row in rows:
+            if row['type'] == 'title':
+                panel_h += title_h + 6
+            elif row['type'] == 'metrics':
+                panel_h += metrics_h
+            elif row['type'] == 'sparkline':
+                panel_h += spark_h + 4
+            elif row['type'] == 'table':
+                panel_h += len(row['rows']) * table_row_h + 4
+        panel_h += margin
+
+        # 半透明深色背景 + 边框，保证可读性且不遮挡交互
+        painter.fillRect(x, y, int(panel_w), int(panel_h), PROFILER_BG)
+        painter.setPen(PROFILER_BORDER)
+        painter.drawRect(x, y, int(panel_w) - 1, int(panel_h) - 1)
+
+        # 标题
+        painter.setFont(title_font)
+        painter.setPen(PROFILER_TITLE)
+        painter.drawText(
+            x + margin, y + margin + title_fm.ascent(), rows[0]['title']
+        )
+        cur_y = y + margin + title_h + 6
+
+        # 内容行：指标行 / 帧周期趋势 / 9 分类表格
+        painter.setFont(body_font)
+        for row in rows[1:]:
+            if row['type'] == 'metrics':
+                items = row['items']
+                cell_w = content_w / max(1, len(items))
+                for i, (label, value) in enumerate(items):
+                    cell_x = x + margin + i * cell_w
+                    painter.setPen(PROFILER_LABEL)
+                    painter.drawText(int(cell_x), cur_y + fm.ascent(), label)
+                    value_w = fm.horizontalAdvance(value)
+                    value_x = cell_x + cell_w - 12
+                    painter.setPen(PROFILER_VALUE)
+                    painter.drawText(
+                        int(value_x - value_w), cur_y + fm.ascent(), value
+                    )
+                cur_y += metrics_h
+            elif row['type'] == 'sparkline':
+                self._draw_frame_trend(
+                    painter, x + margin, cur_y + fm.height() - 2,
+                    content_w, spark_h, row['periods'],
+                )
+                cur_y += spark_h + 4
+            elif row['type'] == 'table':
+                for label, value_ms, pct_v, color in row['rows']:
+                    painter.setPen(PROFILER_LABEL)
+                    painter.drawText(
+                        int(x + margin), cur_y + fm.ascent(), label
+                    )
+                    ms_x = x + margin + row['label_w'] + 12
+                    ms_text = f"{value_ms:.1f}ms"
+                    painter.setPen(PROFILER_VALUE)
+                    painter.drawText(
+                        int(ms_x + row['ms_w'] - fm.horizontalAdvance(ms_text)),
+                        cur_y + fm.ascent(), ms_text,
+                    )
+                    pct_x = ms_x + row['ms_w'] + 8
+                    pct_text = f"{pct_v:.1f}%"
+                    painter.setPen(color)
+                    painter.drawText(
+                        int(pct_x + row['pct_w'] - fm.horizontalAdvance(pct_text)),
+                        cur_y + fm.ascent(), pct_text,
+                    )
+                    # 相对帧周期的占比条
+                    bar_x = pct_x + row['pct_w'] + 8
+                    bar_w = (x + margin + content_w - 6) - bar_x
+                    bar_h = fm.height() - 3
+                    painter.fillRect(
+                        int(bar_x), int(cur_y + 1), int(bar_w), int(bar_h),
+                        QColor(30, 35, 51),
+                    )
+                    frac = min(1.0, max(0.0, pct_v / 100.0))
+                    if frac > 0.01:
+                        painter.fillRect(
+                            int(bar_x), int(cur_y + 1),
+                            max(1, int(bar_w * frac)), int(bar_h),
+                            color,
+                        )
+                    cur_y += table_row_h
+                cur_y += 4
+
+    def _draw_frame_trend(self, painter, x, y, w, h, periods):
+        """绘制最近帧周期趋势（ms）：折线 + 平均值虚线。"""
+        if len(periods) < 2 or w <= 0 or h <= 0:
+            return
+        max_p = max(periods)
+        if max_p <= 0.0:
+            return
+        step = w / (len(periods) - 1)
+        inner_h = h - 2
+
+        # 基线
+        painter.setPen(PROFILER_BORDER)
+        painter.drawLine(int(x), int(y + h - 1), int(x + w), int(y + h - 1))
+
+        # 帧周期折线
+        pen = QPen(PROFILER_TREND)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        points = [
+            (x + i * step, y + h - 1 - (p / max_p) * inner_h)
+            for i, p in enumerate(periods)
+        ]
+        for (x0, y0), (x1, y1) in zip(points, points[1:]):
+            painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+
+        # 平均值虚线
+        avg = sum(periods) / len(periods)
+        y_avg = y + h - 1 - (avg / max_p) * inner_h
+        pen = QPen(PROFILER_WARN)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.drawLine(int(x), int(y_avg), int(x + w), int(y_avg))
+
+    @staticmethod
+    def _profiler_rows(s: dict, periods: list) -> list:
+        """把 FrameProfiler.summary() 组织为 9 分类 + 渲染的覆盖层表格。"""
+
+        def ms(key: str) -> str:
+            return f"{s[key]:.1f}"
+
+        return [
+            {'type': 'title', 'title': '性能分析'},
+            {'type': 'metrics', 'items': [
+                ('FPS', f"{s['fps']:.1f}"),
+                ('平均', f"{ms('period_avg_ms')}ms"),
+                ('p95', f"{ms('period_p95_ms')}ms"),
+                ('峰值', f"{ms('period_max_ms')}ms"),
+            ]},
+            {'type': 'sparkline', 'periods': periods},
+            {'type': 'table', 'rows': [
+                ('1 Force calculation', s['force_ms'], s['pct_force'], PROFILER_PHYSICS),
+                ('2 Integrator(RK4) update', s['integrator_update_ms'], s['pct_integrator'], PROFILER_PHYSICS),
+                ('3 Collision detection', s['collision_ms'], s['pct_collision'], PROFILER_PHYSICS),
+                ('4 Trail/history update', s['trajectory_ms'], s['pct_trajectory'], PROFILER_PHYSICS),
+                ('5 Body state update', s['body_state_ms'], s['pct_body_state'], PROFILER_PHYSICS),
+                ('6 Momentum calculation', s['momentum_ms'], s['pct_momentum'], PROFILER_UI),
+                ('7 Energy calculation', s['energy_ms'], s['pct_energy'], PROFILER_UI),
+                ('8 UI synchronization', s['ui_sync_ms'], s['pct_ui_sync'], PROFILER_UI),
+                ('9 Other', s['other_ms'], s['pct_other'], PROFILER_WARN),
+                ('Render', s['render_ms'], s['pct_render'], PROFILER_RENDER),
+            ]},
+            {'type': 'metrics', 'items': [
+                ('引擎', f"{ms('engine_ms')}ms"),
+                ('天体', f"{s['bodies']:.0f}"),
+                ('子步/帧', f"{s['substeps']:.1f}"),
+                ('融合', f"{s['merges']:.2f}"),
+            ]},
+        ]
     
     def mousePressEvent(self, event: QMouseEvent):
         """鼠标按下"""

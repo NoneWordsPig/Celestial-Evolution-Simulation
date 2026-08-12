@@ -33,6 +33,7 @@ from .add_body_dialog import AddBodyDialog
 from .styles import apply_global_style, apply_button_style, PANEL_STYLE
 from physics.scene_manager import SceneManager
 from .toast import Toast
+from .profiler import FrameProfiler
 
 
 # 速度滑杆范围（对数刻度）
@@ -111,6 +112,12 @@ class MainWindow(QMainWindow):
         self._ref_frame_timer = QTimer(self)
         self._ref_frame_timer.timeout.connect(self._update_reference_frame)
         self._ref_frame_timer.start(50)  # 20 Hz
+
+        # 性能分析器（运行时包装计时，不修改任何物理算法）
+        self.profiler = FrameProfiler(self.engine, self.reference_frame)
+        self.profiler.attach()
+        self.sim_widget.set_profiler(self.profiler)
+        self.profiler.attach_ui(self)
         
         # 应用样式
         self.setStyleSheet(PANEL_STYLE)
@@ -246,6 +253,17 @@ class MainWindow(QMainWindow):
         toggle_right_action = QAction("显示/隐藏检查器", self)
         toggle_right_action.triggered.connect(self._toggle_right_panel)
         view_menu.addAction(toggle_right_action)
+
+        view_menu.addSeparator()
+
+        # 性能分析覆盖层开关（仅控制模拟视图左上角的显示）
+        self.profiler_overlay_action = QAction("显示性能分析(&P)", self)
+        self.profiler_overlay_action.setCheckable(True)
+        self.profiler_overlay_action.setChecked(True)
+        self.profiler_overlay_action.triggered.connect(
+            self.sim_widget.set_profiler_overlay_visible
+        )
+        view_menu.addAction(self.profiler_overlay_action)
         
         # 参考系菜单
         ref_menu = menubar.addMenu("参考系(&R)")
@@ -583,6 +601,8 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             QMessageBox.warning(self, "加载场景失败", str(exc))
             return
+        # 场景导入可能重建积分器，让性能分析器重新挂接计时
+        self.profiler.refresh()
         # 场景中的 time_scale 同步到滑杆/标签/预设档位
         self._set_speed_control(self.engine.time_scale)
         self.body_list.refresh()
@@ -736,7 +756,7 @@ class MainWindow(QMainWindow):
             "- 质心参考系\n"
             "- 模拟/科学模式切换"
         )
-    
+
     def _update_status(self):
         """更新状态栏"""
         self.fps_label.setText("FPS: ~30")

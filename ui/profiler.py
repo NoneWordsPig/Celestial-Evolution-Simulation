@@ -9,11 +9,11 @@ Physics 拆分：
  2 Integrator(RK4) update   RK4Integrator.step - force（状态快照/预测/写入）
  3 Collision detection      CollisionHandler.resolve_collisions（检测/融合）
  4 Trail/history update     PhysicsEngine._record_trajectories
- 5 Body state update        无独立阶段：位置/速度写入发生在积分器内（并入 #2）
- 9 Other                    帧周期 - 上述各项 - 渲染 - UI（含引擎杂项/空闲）
+ 5 Body state update        engine.advance - (积分器+碰撞+轨迹)（引擎杂项/状态写入）
+ 9 Other                    帧周期 - (1..8 + 渲染)：未被任何阶段计入的剩余
 
 UI/主线程：
- 6 Momentum calculation     ReferenceFrame 质心速度/总动量 + 引擎 total_momentum
+ 6 Momentum calculation     ReferenceFrame 质心位置/速度/总动量 + 引擎 total_momentum
  7 Energy calculation       引擎 kinetic/potential/body_kinetic_energy
  8 UI synchronization       MainWindow 状态栏/参考系定时回调 + 检查器刷新
 
@@ -52,6 +52,7 @@ class FrameProfiler:
         self._ui_timer_bindings = []
         self._in_rk4 = False
         self._stage_idx = 0
+        self._wrapped_integrator = None
 
     # ------------------------------------------------------------
     # 生命周期
@@ -73,6 +74,25 @@ class FrameProfiler:
             self._frame['bodies'] = len(engine.bodies)
         self._originals['_single_step'] = orig_single
         engine._single_step = types.MethodType(single_step_wrapper, engine)
+
+        # 引擎整帧总耗时（advance = 积分+碰撞+轨迹+循环/累加器杂项）
+        orig_advance = engine.advance
+        def advance_wrapper(e_self, wall_seconds):
+            t0 = time.perf_counter()
+            result = orig_advance(wall_seconds)
+            self._frame['engine'] += time.perf_counter() - t0
+            return result
+        self._originals['advance'] = orig_advance
+        engine.advance = types.MethodType(advance_wrapper, engine)
+
+        orig_step = engine.step
+        def step_wrapper(e_self):
+            t0 = time.perf_counter()
+            result = orig_step()
+            self._frame['engine'] += time.perf_counter() - t0
+            return result
+        self._originals['step'] = orig_step
+        engine.step = types.MethodType(step_wrapper, engine)
 
         orig_record = engine._record_trajectories
         def record_wrapper(engine_self):
@@ -118,24 +138,15 @@ class FrameProfiler:
         self._originals['resolve_collisions'] = orig_resolve
         handler.resolve_collisions = types.MethodType(resolve_wrapper, handler)
 
-        if type(engine.integrator).__name__ == 'RK4Integrator':
-            integrator = engine.integrator
-            orig_step = integrator.step
-            def rk4_step_wrapper(engine_self, bodies, dt):
-                self._in_rk4 = True
-                self._stage_idx = 0
-                t0 = time.perf_counter()
-                try:
-                    return orig_step(bodies, dt)
-                finally:
-                    self._frame["integrator"] += time.perf_counter() - t0
-                    self._in_rk4 = False
-            self._originals['rk4_step'] = orig_step
-            integrator.step = types.MethodType(rk4_step_wrapper, integrator)
+        self._wrap_integrator()
 
-        # 动量计算（质心速度/总动量）——来自参考系与引擎只读查询
+        # 动量计算（质心位置/速度/总动量）——来自参考系与引擎只读查询
         if self.reference_frame is not None:
-            for name in ('compute_center_of_mass_velocity', 'compute_total_momentum'):
+            for name in (
+                'compute_center_of_mass',
+                'compute_center_of_mass_velocity',
+                'compute_total_momentum',
+            ):
                 orig = getattr(self.reference_frame, name)
                 def make_momentum_wrap(orig_fn):
                     def w(rf_self, bodies):
@@ -173,6 +184,33 @@ class FrameProfiler:
             setattr(engine, name, types.MethodType(make_energy_wrap(orig), engine))
 
         self._attached = True
+
+    def _wrap_integrator(self) -> None:
+        """包装当前积分器的 step（RK4 额外按 k1..k4 阶段归因）。"""
+        integrator = self.engine.integrator
+        orig_step = integrator.step
+        is_rk4 = type(integrator).__name__ == 'RK4Integrator'
+
+        def step_wrapper(e_self, bodies, dt, **kwargs):
+            if is_rk4:
+                self._in_rk4 = True
+                self._stage_idx = 0
+            t0 = time.perf_counter()
+            try:
+                return orig_step(bodies, dt, **kwargs)
+            finally:
+                self._frame['integrator'] += time.perf_counter() - t0
+                if is_rk4:
+                    self._in_rk4 = False
+
+        self._originals['integrator_step'] = orig_step
+        integrator.step = types.MethodType(step_wrapper, integrator)
+        self._wrapped_integrator = integrator
+
+    def refresh(self) -> None:
+        """引擎组件被替换（如 SceneManager 加载场景重建积分器）后重新挂接计时。"""
+        if self._attached and self.engine.integrator is not self._wrapped_integrator:
+            self._wrap_integrator()
 
     def attach_ui(self, window) -> None:
         """包装主窗口 UI 定时回调与刷新（计入 UI 同步耗时）。"""
@@ -237,16 +275,25 @@ class FrameProfiler:
                 engine._single_step = self._originals['_single_step']
             if '_record_trajectories' in self._originals:
                 engine._record_trajectories = self._originals['_record_trajectories']
+            if 'advance' in self._originals:
+                engine.advance = self._originals['advance']
+            if 'step' in self._originals:
+                engine.step = self._originals['step']
             if 'compute_accelerations' in self._originals:
                 engine.gravity_solver.compute_accelerations = self._originals['compute_accelerations']
             if 'detect_collisions' in self._originals:
                 engine.collision_handler.detect_collisions = self._originals['detect_collisions']
             if 'resolve_collisions' in self._originals:
                 engine.collision_handler.resolve_collisions = self._originals['resolve_collisions']
-            if 'rk4_step' in self._originals:
-                engine.integrator.step = self._originals['rk4_step']
+            if 'integrator_step' in self._originals:
+                engine.integrator.step = self._originals['integrator_step']
+            self._wrapped_integrator = None
             if self.reference_frame is not None:
-                for name in ('compute_center_of_mass_velocity', 'compute_total_momentum'):
+                for name in (
+                    'compute_center_of_mass',
+                    'compute_center_of_mass_velocity',
+                    'compute_total_momentum',
+                ):
                     key = 'rf_' + name
                     if key in self._originals:
                         setattr(self.reference_frame, name, self._originals[key])
@@ -265,7 +312,12 @@ class FrameProfiler:
 
     def frame_start(self) -> None:
         """开始新帧：先把上一帧（含期间的渲染/UI 耗时）推入历史。"""
+        # 积分器可能被 SceneManager 替换（加载场景），检测到后自动重新挂接
+        if (self._wrapped_integrator is not None
+                and self.engine.integrator is not self._wrapped_integrator):
+            self._wrap_integrator()
         now = time.perf_counter()
+        period = 0.0
         if self._last_start is not None:
             period = now - self._last_start
             if period > 0.0:
@@ -277,6 +329,7 @@ class FrameProfiler:
         self._last_start = now
 
         if self._frame_open:
+            self._frame['period'] = period
             self.history.append(self._frame)
         self._frame = self._new_frame()
         self._frame_open = True
@@ -287,6 +340,10 @@ class FrameProfiler:
             self.history.append(self._frame)
             self._frame = self._new_frame()
             self._frame_open = False
+
+    def frame_period_history_ms(self) -> list:
+        """最近各帧的墙钟帧周期（ms），用于趋势图（过滤无效周期）。"""
+        return [f['period'] * 1000.0 for f in self.history if f['period'] > 0.0]
 
     def add_render(self, milliseconds: float) -> None:
         """渲染总耗时上报（兼容接口，不细分阶段；内部统一按秒存储）。"""
@@ -314,7 +371,9 @@ class FrameProfiler:
     @staticmethod
     def _new_frame() -> dict:
         return {
+            'period': 0.0,
             'physics': 0.0,
+            'engine': 0.0,
             'force': 0.0,
             'k1': 0.0, 'k2': 0.0, 'k3': 0.0, 'k4': 0.0,
             'integrator': 0.0,
@@ -340,9 +399,9 @@ class FrameProfiler:
 
         分类（对应 UI 面板）：
           1 Force calculation / 2 Integrator(RK4) update / 3 Collision detection
-          4 Trail/history update / 5 Body state update(并入2)
+          4 Trail/history update / 5 Body state update（advance 内未细分余量）
           6 Momentum calculation / 7 Energy calculation / 8 UI synchronization
-          9 Other
+          9 Other（帧周期 - 1..8 - 渲染）
         """
         n = len(self.history)
         if n == 0:
@@ -360,6 +419,7 @@ class FrameProfiler:
             return avg[key] * 1000.0
 
         physics = ms('physics')
+        engine_total = ms('engine')
         force = ms('force')
         integrator = ms('integrator')
         integrator_update = max(0.0, integrator - force)
@@ -367,6 +427,7 @@ class FrameProfiler:
         detect = ms('detect')
         merge = max(0.0, collision - detect)
         trajectory = ms('trajectory')
+        body_state = max(0.0, engine_total - integrator - collision - trajectory)
         momentum = ms('momentum')
         energy = ms('energy')
         ui_total = ms('ui_sync')
@@ -374,18 +435,31 @@ class FrameProfiler:
         render = ms('render')
 
         frame_period = (1000.0 / self._fps_ema) if self._fps_ema > 0.0 else 0.0
-        accounted = physics + ui_total + render
+        accounted = engine_total + momentum + energy + ui_rest + render
         denominator = max(frame_period, accounted) if accounted > 0.0 else frame_period
-        # 9 Other = 帧周期 - (1..4 + 6..8 + 渲染)，含引擎杂项与帧空闲
+        # 9 Other = 帧周期 - (1..5 + 6 + 7 + 8 + 渲染)：未被任何阶段计入的剩余
         other = max(0.0, frame_period - (
-            force + integrator_update + collision + trajectory
-            + momentum + energy + ui_rest + render
+            engine_total + momentum + energy + ui_rest + render
         ))
 
         frame_ms = [(f['physics'] + f['render']) * 1000.0 for f in self.history]
         frame_sorted = sorted(frame_ms)
         frame_max = frame_sorted[-1]
         frame_p95 = frame_sorted[int(round(0.95 * (n - 1)))]
+
+        # 基于真实墙钟帧周期的分布统计（平均/p95/峰值）
+        periods_ms = [f['period'] * 1000.0 for f in self.history if f['period'] > 0.0]
+        if periods_ms:
+            periods_sorted = sorted(periods_ms)
+            period_avg = sum(periods_ms) / len(periods_ms)
+            period_p95 = periods_sorted[
+                int(round(0.95 * (len(periods_sorted) - 1)))
+            ]
+            period_max = periods_sorted[-1]
+        else:
+            period_avg = frame_period
+            period_p95 = 0.0
+            period_max = 0.0
 
         def pct(value_ms: float) -> float:
             return (value_ms / denominator * 100.0) if denominator > 0.0 else 0.0
@@ -395,8 +469,12 @@ class FrameProfiler:
             'frame_period': frame_period,
             'frame_max': frame_max,
             'frame_p95': frame_p95,
+            'period_avg_ms': period_avg,
+            'period_p95_ms': period_p95,
+            'period_max_ms': period_max,
             'physics_ms': physics,
             'physics_max': mx['physics'] * 1000.0,
+            'engine_ms': engine_total,
             'force_ms': force,
             'integrator_ms': integrator,
             'integrator_update_ms': integrator_update,
@@ -405,10 +483,12 @@ class FrameProfiler:
             'detect_ms': detect,
             'merge_ms': merge,
             'trajectory_ms': trajectory,
+            'body_state_ms': body_state,
             'momentum_ms': momentum,
             'energy_ms': energy,
             'ui_sync_ms': ui_rest,
             'ui_sync_total_ms': ui_total,
+            'ui_sync_max': mx['ui_sync'] * 1000.0,
             'render_ms': render,
             'render_max': mx['render'] * 1000.0,
             'render_star_ms': ms('star'),
@@ -425,6 +505,7 @@ class FrameProfiler:
             'pct_integrator': pct(integrator_update),
             'pct_collision': pct(collision),
             'pct_trajectory': pct(trajectory),
+            'pct_body_state': pct(body_state),
             'pct_momentum': pct(momentum),
             'pct_energy': pct(energy),
             'pct_ui_sync': pct(ui_rest),
