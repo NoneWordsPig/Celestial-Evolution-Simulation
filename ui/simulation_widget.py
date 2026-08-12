@@ -35,7 +35,7 @@ PROFILER_VALUE = QColor(229, 231, 235)
 PROFILER_PHYSICS = QColor(99, 102, 241)  # 靛蓝
 PROFILER_UI = QColor(139, 92, 246)       # 紫
 PROFILER_RENDER = QColor(6, 182, 212)    # 青
-PROFILER_WARN = QColor(245, 158, 11)     # 琥珀（Other/瓶颈）
+PROFILER_WARN = QColor(245, 158, 11)     # 琥珀（Unaccounted Time/瓶颈）
 PROFILER_TREND = QColor(34, 211, 238)    # 趋势线亮青
 
 
@@ -89,11 +89,14 @@ class SimulationWidget(QOpenGLWidget):
         # 选中的天体索引
         self._selected_body_index = -1
         
-        # 动画
-        self._animation_timer = QTimer(self)
-        self._animation_timer.timeout.connect(self._on_animation_tick)
+        # 主循环：物理定时器（固定步长推进）与渲染定时器（60 FPS）解耦
+        self._physics_timer = QTimer(self)
+        self._physics_timer.timeout.connect(self._on_animation_tick)
+        self._render_timer = QTimer(self)
+        self._render_timer.timeout.connect(self._on_render_tick)
         self._is_paused = False
         self._target_fps = 30
+        self._render_fps = 60
         self._last_tick_time = None  # 墙钟时间（平滑步进用）
         # 倍率上限检测窗口状态（仅在倍率切换后的一次性窗口内采样）
         self._fps_ema = float(self._target_fps)
@@ -117,14 +120,15 @@ class SimulationWidget(QOpenGLWidget):
         self.update()
 
     def start_animation(self):
-        """启动动画"""
-        interval = int(1000 / self._target_fps)
+        """启动主循环：物理 30 Hz + 渲染 60 Hz，互不阻塞。"""
         self._last_tick_time = time.perf_counter()
-        self._animation_timer.start(interval)
+        self._physics_timer.start(int(1000 / self._target_fps))
+        self._render_timer.start(int(1000 / self._render_fps))
     
     def stop_animation(self):
-        """停止动画"""
-        self._animation_timer.stop()
+        """停止主循环"""
+        self._physics_timer.stop()
+        self._render_timer.stop()
 
     def set_profiler(self, profiler) -> None:
         """挂接性能分析器（驱动帧计时，并上报渲染各子阶段耗时）。"""
@@ -150,7 +154,7 @@ class SimulationWidget(QOpenGLWidget):
         self.update()
     
     def _on_animation_tick(self):
-        """动画回调"""
+        """物理推进回调：仅推进模拟，不触发重绘（与渲染解耦）。"""
         profiler = self._profiler
         if profiler is not None:
             # 结束上一帧（含渲染/UI 耗时）并开始新一帧
@@ -166,6 +170,9 @@ class SimulationWidget(QOpenGLWidget):
             self._last_tick_time = now
             self.engine.advance(wall_dt)
             self._update_rate_check(wall_dt)
+
+    def _on_render_tick(self):
+        """渲染回调：仅请求重绘，不推进模拟。"""
         self.update()
 
     def start_rate_check(self) -> None:
@@ -241,11 +248,16 @@ class SimulationWidget(QOpenGLWidget):
 
         if profiler is not None:
             t_end = time.perf_counter()
+            # GPU 同步等待：CPU 等 GPU 完成命令（仅分析，不改绘制）
+            t_gpu = time.perf_counter()
+            gl.glFinish()
+            gpu_sync = time.perf_counter() - t_gpu
             profiler.add_render_parts(
                 render=(t_end - t0) * 1000.0,
                 trails=(t_bodies - t_trails) * 1000.0,
                 render_bodies=(t_overlay - t_bodies) * 1000.0,
                 overlay=(t_end - t_overlay) * 1000.0,
+                gpu_sync=gpu_sync * 1000.0,
             )
     
     def _draw_bodies(self):
@@ -432,7 +444,7 @@ class SimulationWidget(QOpenGLWidget):
                     fm.horizontalAdvance(f"{r[1]:.1f}ms") for r in row['rows']
                 )
                 row['pct_w'] = max(
-                    fm.horizontalAdvance(f"{r[2]:.1f}%") for r in row['rows']
+                    fm.horizontalAdvance(r[2]) for r in row['rows']
                 )
                 need = row['label_w'] + 12 + row['ms_w'] + 8 + row['pct_w'] + 70
                 content_w = max(content_w, need)
@@ -495,7 +507,7 @@ class SimulationWidget(QOpenGLWidget):
                 )
                 cur_y += spark_h + 4
             elif row['type'] == 'table':
-                for label, value_ms, pct_v, color in row['rows']:
+                for label, value_ms, pct_text, color, bar_ref in row['rows']:
                     painter.setPen(PROFILER_LABEL)
                     painter.drawText(
                         int(x + margin), cur_y + fm.ascent(), label
@@ -508,13 +520,12 @@ class SimulationWidget(QOpenGLWidget):
                         cur_y + fm.ascent(), ms_text,
                     )
                     pct_x = ms_x + row['ms_w'] + 8
-                    pct_text = f"{pct_v:.1f}%"
                     painter.setPen(color)
                     painter.drawText(
                         int(pct_x + row['pct_w'] - fm.horizontalAdvance(pct_text)),
                         cur_y + fm.ascent(), pct_text,
                     )
-                    # 相对帧周期的占比条
+                    # 占比条：主行相对帧周期，Unaccounted 子行相对 Unaccounted
                     bar_x = pct_x + row['pct_w'] + 8
                     bar_w = (x + margin + content_w - 6) - bar_x
                     bar_h = fm.height() - 3
@@ -522,7 +533,7 @@ class SimulationWidget(QOpenGLWidget):
                         int(bar_x), int(cur_y + 1), int(bar_w), int(bar_h),
                         QColor(30, 35, 51),
                     )
-                    frac = min(1.0, max(0.0, pct_v / 100.0))
+                    frac = min(1.0, max(0.0, value_ms / max(bar_ref, 1e-6)))
                     if frac > 0.01:
                         painter.fillRect(
                             int(bar_x), int(cur_y + 1),
@@ -567,10 +578,19 @@ class SimulationWidget(QOpenGLWidget):
 
     @staticmethod
     def _profiler_rows(s: dict, periods: list) -> list:
-        """把 FrameProfiler.summary() 组织为 9 分类 + 渲染的覆盖层表格。"""
+        """把 FrameProfiler.summary() 组织为 9 分类 + Unaccounted 细分表格。"""
 
         def ms(key: str) -> str:
             return f"{s[key]:.1f}"
+
+        period = max(s['frame_period'], 1e-6)
+        unaccounted = max(s['unaccounted_ms'], 1e-6)
+
+        def pct_frame(v: float) -> str:
+            return f"{v / period * 100.0:.1f}%"
+
+        def pct_unacc(v: float) -> str:
+            return f"{v / unaccounted * 100.0:.1f}%"
 
         return [
             {'type': 'title', 'title': '性能分析'},
@@ -582,16 +602,21 @@ class SimulationWidget(QOpenGLWidget):
             ]},
             {'type': 'sparkline', 'periods': periods},
             {'type': 'table', 'rows': [
-                ('1 Force calculation', s['force_ms'], s['pct_force'], PROFILER_PHYSICS),
-                ('2 Integrator(RK4) update', s['integrator_update_ms'], s['pct_integrator'], PROFILER_PHYSICS),
-                ('3 Collision detection', s['collision_ms'], s['pct_collision'], PROFILER_PHYSICS),
-                ('4 Trail/history update', s['trajectory_ms'], s['pct_trajectory'], PROFILER_PHYSICS),
-                ('5 Body state update', s['body_state_ms'], s['pct_body_state'], PROFILER_PHYSICS),
-                ('6 Momentum calculation', s['momentum_ms'], s['pct_momentum'], PROFILER_UI),
-                ('7 Energy calculation', s['energy_ms'], s['pct_energy'], PROFILER_UI),
-                ('8 UI synchronization', s['ui_sync_ms'], s['pct_ui_sync'], PROFILER_UI),
-                ('9 Other', s['other_ms'], s['pct_other'], PROFILER_WARN),
-                ('Render', s['render_ms'], s['pct_render'], PROFILER_RENDER),
+                ('1 Force calculation', s['force_ms'], f"{s['pct_force']:.1f}%", PROFILER_PHYSICS, period),
+                ('2 Integrator(RK4) update', s['integrator_update_ms'], f"{s['pct_integrator']:.1f}%", PROFILER_PHYSICS, period),
+                ('3 Collision detection', s['collision_ms'], f"{s['pct_collision']:.1f}%", PROFILER_PHYSICS, period),
+                ('4 Trail/history update', s['trajectory_ms'], f"{s['pct_trajectory']:.1f}%", PROFILER_PHYSICS, period),
+                ('5 Body state update', s['body_state_ms'], f"{s['pct_body_state']:.1f}%", PROFILER_PHYSICS, period),
+                ('6 Momentum calculation', s['momentum_ms'], f"{s['pct_momentum']:.1f}%", PROFILER_UI, period),
+                ('7 Energy calculation', s['energy_ms'], f"{s['pct_energy']:.1f}%", PROFILER_UI, period),
+                ('8 UI synchronization', s['ui_sync_ms'], f"{s['pct_ui_sync']:.1f}%", PROFILER_UI, period),
+                ('9 Unaccounted Time', s['unaccounted_ms'], pct_frame(s['unaccounted_ms']), PROFILER_WARN, period),
+                ('  a. Qt event processing', s['qt_events_ms'], pct_unacc(s['qt_events_ms']), PROFILER_WARN, unaccounted),
+                ('  b. sleep / frame limiter', s['sleep_ms'], pct_unacc(s['sleep_ms']), PROFILER_WARN, unaccounted),
+                ('  c. OS scheduling waiting', s['os_wait_ms'], pct_unacc(s['os_wait_ms']), PROFILER_WARN, unaccounted),
+                ('  d. GPU synchronization', s['gpu_sync_ms'], pct_unacc(s['gpu_sync_ms']), PROFILER_WARN, unaccounted),
+                ('  e. unknown / untracked', s['unknown_ms'], pct_unacc(s['unknown_ms']), PROFILER_WARN, unaccounted),
+                ('Render', s['render_net_ms'], f"{s['pct_render']:.1f}%", PROFILER_RENDER, period),
             ]},
             {'type': 'metrics', 'items': [
                 ('引擎', f"{ms('engine_ms')}ms"),

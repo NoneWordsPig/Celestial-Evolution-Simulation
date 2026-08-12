@@ -5,14 +5,14 @@
 """
 
 import sys
-from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 from ui.styles import apply_global_style
+from ui.profiler import ProfilingApplication
 
 
 def main():
     """主函数"""
-    app = QApplication(sys.argv)
+    app = ProfilingApplication(sys.argv)
     
     # 设置应用样式
     app.setStyle('Fusion')

@@ -7,6 +7,7 @@
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QMenuBar, QMenu, QStatusBar, QLabel,
-    QMessageBox, QToolBar, QPushButton, QFrame, QApplication,
+    QMessageBox, QToolBar, QPushButton, QFrame,
     QFileDialog, QInputDialog, QSlider, QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -33,7 +34,7 @@ from .add_body_dialog import AddBodyDialog
 from .styles import apply_global_style, apply_button_style, PANEL_STYLE
 from physics.scene_manager import SceneManager
 from .toast import Toast
-from .profiler import FrameProfiler
+from .profiler import FrameProfiler, ProfilingApplication, PerformanceLogger
 
 
 # 速度滑杆范围（对数刻度）
@@ -118,6 +119,20 @@ class MainWindow(QMainWindow):
         self.profiler.attach()
         self.sim_widget.set_profiler(self.profiler)
         self.profiler.attach_ui(self)
+
+        # 逐帧性能日志（每帧输出，每秒统计均值/峰值/1s 窗口均值）
+        log_path = Path(
+            os.environ.get(
+                'PERF_LOG_PATH',
+                str(Path(__file__).resolve().parent.parent / 'logs' / 'performance.log'),
+            )
+        )
+        self.performance_logger = PerformanceLogger(
+            self.profiler,
+            path=log_path,
+            enabled=os.environ.get('PERF_LOG', '1') == '1',
+        )
+        self.profiler.set_frame_listener(self.performance_logger.record)
         
         # 应用样式
         self.setStyleSheet(PANEL_STYLE)
@@ -793,7 +808,7 @@ class MainWindow(QMainWindow):
 
 def main():
     """主函数"""
-    app = QApplication(sys.argv)
+    app = ProfilingApplication(sys.argv)
     
     # 设置应用样式
     app.setStyle('Fusion')
