@@ -517,20 +517,6 @@ and loading a scene rebuilds the engine integrator accordingly.
 Switch to Scientific mode, then add bodies using `M_sun` / `kg` for mass,
 `AU` / `km` / `m` for position, and `km/s` for velocity.
 
-## Contributing
-
-Before modifying code, please follow the project rules in `AGENTS.md`:
-
-- Only read the files required for the task and never rewrite unrelated
-  modules (`Physics` / `UI` / `Renderer`).
-- Keep the architecture constraints: physics has no UI dependency, unit
-  system is standalone, scene management does no physics, renderer never
-  mutates state, camera only transforms coordinates, UI never computes
-  physics.
-- Keep numerical rules: float64, normalized units, `G = 1`, no SI `G` inside
-  the engine.
-- Keep RK4; add new integrators as separate `Integrator` classes.
-- Run targeted tests; any physics change requires numerical verification.
 
 ## Acknowledgments
 

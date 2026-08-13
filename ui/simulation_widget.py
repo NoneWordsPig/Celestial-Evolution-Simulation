@@ -610,51 +610,44 @@ class SimulationWidget(QOpenGLWidget):
 
     @staticmethod
     def _profiler_rows(s: dict, periods: list) -> list:
-        """把 FrameProfiler.summary() 组织为 9 分类 + Unaccounted 细分表格。"""
+        """把 FrameProfiler.summary() 组织为阶段明细表（真实计算 vs 等待）。"""
 
         def ms(key: str) -> str:
             return f"{s[key]:.1f}"
 
         period = max(s['frame_period'], 1e-6)
-        unaccounted = max(s['unaccounted_ms'], 1e-6)
 
         def pct_frame(v: float) -> str:
             return f"{v / period * 100.0:.1f}%"
-
-        def pct_unacc(v: float) -> str:
-            return f"{v / unaccounted * 100.0:.1f}%"
 
         return [
             {'type': 'title', 'title': '性能分析'},
             {'type': 'metrics', 'items': [
                 ('FPS', f"{s['fps']:.1f}"),
-                ('平均', f"{ms('period_avg_ms')}ms"),
+                ('Frame', f"{ms('period_avg_ms')}ms"),
                 ('p95', f"{ms('period_p95_ms')}ms"),
                 ('峰值', f"{ms('period_max_ms')}ms"),
             ]},
             {'type': 'sparkline', 'periods': periods},
             {'type': 'table', 'rows': [
-                ('1 Force calculation', s['force_ms'], f"{s['pct_force']:.1f}%", PROFILER_PHYSICS, period),
-                ('2 Integrator(RK4) update', s['integrator_update_ms'], f"{s['pct_integrator']:.1f}%", PROFILER_PHYSICS, period),
-                ('3 Collision detection', s['collision_ms'], f"{s['pct_collision']:.1f}%", PROFILER_PHYSICS, period),
-                ('4 Trail/history update', s['trajectory_ms'], f"{s['pct_trajectory']:.1f}%", PROFILER_PHYSICS, period),
-                ('5 Body state update', s['body_state_ms'], f"{s['pct_body_state']:.1f}%", PROFILER_PHYSICS, period),
-                ('6 Momentum calculation', s['momentum_ms'], f"{s['pct_momentum']:.1f}%", PROFILER_UI, period),
-                ('7 Energy calculation', s['energy_ms'], f"{s['pct_energy']:.1f}%", PROFILER_UI, period),
-                ('8 UI synchronization', s['ui_sync_ms'], f"{s['pct_ui_sync']:.1f}%", PROFILER_UI, period),
-                ('9 Unaccounted Time', s['unaccounted_ms'], pct_frame(s['unaccounted_ms']), PROFILER_WARN, period),
-                ('  a. Qt event processing', s['qt_events_ms'], pct_unacc(s['qt_events_ms']), PROFILER_WARN, unaccounted),
-                ('  b. sleep / frame limiter', s['sleep_ms'], pct_unacc(s['sleep_ms']), PROFILER_WARN, unaccounted),
-                ('  c. OS scheduling waiting', s['os_wait_ms'], pct_unacc(s['os_wait_ms']), PROFILER_WARN, unaccounted),
-                ('  d. GPU synchronization', s['gpu_sync_ms'], pct_unacc(s['gpu_sync_ms']), PROFILER_WARN, unaccounted),
-                ('  e. unknown / untracked', s['unknown_ms'], pct_unacc(s['unknown_ms']), PROFILER_WARN, unaccounted),
-                ('Render', s['render_net_ms'], f"{s['pct_render']:.1f}%", PROFILER_RENDER, period),
+                ('Physics', s['physics_ms'], pct_frame(s['physics_ms']), PROFILER_PHYSICS, period),
+                ('  1 Force', s['force_ms'], pct_frame(s['force_ms']), PROFILER_PHYSICS, period),
+                ('  2 Integrator', s['integrator_update_ms'], pct_frame(s['integrator_update_ms']), PROFILER_PHYSICS, period),
+                ('  3 Collision', s['collision_ms'], pct_frame(s['collision_ms']), PROFILER_PHYSICS, period),
+                ('  4 Trail', s['trail_ms'], pct_frame(s['trail_ms']), PROFILER_PHYSICS, period),
+                ('  5 Body update', s['body_update_ms'], pct_frame(s['body_update_ms']), PROFILER_PHYSICS, period),
+                ('UI callbacks', s['ui_ms'], pct_frame(s['ui_ms']), PROFILER_UI, period),
+                ('Render CPU', s['render_cpu_ms'], pct_frame(s['render_cpu_ms']), PROFILER_RENDER, period),
+                ('GPU Wait', s['gpu_wait_ms'], pct_frame(s['gpu_wait_ms']), PROFILER_WARN, period),
+                ('Render Wall', s['render_wall_ms'], pct_frame(s['render_wall_ms']), PROFILER_RENDER, period),
+                ('Qt dispatch', s['qt_dispatch_ms'], pct_frame(s['qt_dispatch_ms']), PROFILER_UI, period),
+                ('Unaccounted', s['unaccounted_ms'], pct_frame(s['unaccounted_ms']), PROFILER_WARN, period),
             ]},
             {'type': 'metrics', 'items': [
-                ('引擎', f"{ms('engine_ms')}ms"),
                 ('天体', f"{s['bodies']:.0f}"),
                 ('子步/帧', f"{s['substeps']:.1f}"),
                 ('融合', f"{s['merges']:.2f}"),
+                ('物理', f"{ms('physics_ms')}ms"),
             ]},
         ]
     

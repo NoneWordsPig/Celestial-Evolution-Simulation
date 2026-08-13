@@ -1,39 +1,27 @@
 """
 运行时性能分析器（FrameProfiler）
 
-在不修改任何物理算法源码的前提下，通过运行时包装引擎/UI 方法，
-按帧统计以下耗时（单位 ms）：
+设计原则：
+- Physics 计时不再通过 monkey-patch 私有方法，而是由 PhysicsEngine 主动调用
+  可选计时钩子（engine.set_timing / GravitySolver.set_timing）记录各阶段耗时；
+  profiler 关闭时引擎走无计时快速路径，额外开销仅为一次 None 判断。
+- 渲染计时由 SimulationWidget.paintGL 上报：
+      Render Wall     = paintGL 整段墙钟耗时（含 glFinish 等待）
+      GPU Wait        = paintGL 内 glFinish 实测等待（CPU 等 GPU）
+      Render CPU      = Render Wall - GPU Wait（真正渲染计算耗时）
+  PerformanceLogger 与屏幕 profiler 使用同一套定义。
+- Qt 事件分发由 ProfilingApplication.notify 统计全事件分发墙钟（qt_events）；
+  Qt dispatch（净分发开销）= notify 总时长 - 已单独计时的
+  Physics / UI callbacks / Render Wall，避免重复计入。
+- 等待时间（GPU Wait、Qt 空闲、OS 调度）一律不计入 Physics 或 Render CPU。
 
-Physics 拆分：
- 1 Force calculation        GravitySolver.compute_accelerations（RK4 k1..k4）
- 2 Integrator(RK4) update   RK4Integrator.step - force（状态快照/预测/写入）
- 3 Collision detection      CollisionHandler.resolve_collisions（检测/融合）
- 4 Trail/history update     PhysicsEngine._record_trajectories
- 5 Body state update        engine.advance - (积分器+碰撞+轨迹)（引擎余量/状态写入）
- 9 Unaccounted Time         帧周期 - (1..8 + 渲染)：未被任何阶段计入的剩余
-    细分：
-      a. Qt event processing       QApplication.notify 分发开销（不含回调本身）
-      b. sleep / frame limiter     目标帧间隔 - 已计入工作量（主动等待）
-      c. OS scheduling waiting     定时器合并/调度造成的额外等待
-      d. GPU synchronization       paintGL 内 glFinish 实测（CPU 等 GPU）
-      e. unknown / untracked       归因异常余量（通常为 0）
-
-等待时间一律不计入 Physics/Render 计算耗时。
-
-UI/主线程：
- 6 Momentum calculation     ReferenceFrame 质心位置/速度/总动量 + 引擎 total_momentum
- 7 Energy calculation       引擎 kinetic/potential/body_kinetic_energy
- 8 UI synchronization       MainWindow 状态栏/参考系定时回调 + 检查器刷新
-
-渲染：SimulationWidget.paintGL 上报（star/trails/bodies/overlay 子阶段）。
-
-用法（由 SimulationWidget 动画 tick 驱动）：
+每帧输出（由 SimulationWidget 动画 tick 驱动）：
     profiler = FrameProfiler(engine, reference_frame)
-    profiler.attach()
+    profiler.attach()               # engine.set_timing(profiler)
     profiler.frame_start()          # 结束上一帧、开始新一帧
-    engine.advance(...)             # 内部各阶段自动计时
-    profiler.add_render_parts(...)  # paintGL 内调用
-    profiler.attach_ui(main_window) # 主窗口初始化完成后挂接 UI 回调计时
+    engine.advance(...)             # 引擎主动上报 force/integrator/collision/trail/body_update/step
+    profiler.add_render_parts(...)  # paintGL 内上报 Render Wall / 子阶段 / GPU Wait
+    profiler.attach_ui(main_window) # 包装 UI 回调计时（非物理，方法包装）
 """
 
 import time
@@ -41,8 +29,6 @@ import types
 from collections import deque
 
 from PyQt6.QtWidgets import QApplication
-
-_RK4_STAGES = ('k1', 'k2', 'k3', 'k4')
 
 # 当前激活的分析器（供 ProfilingApplication.notify 归因事件分发耗时）
 _ACTIVE_PROFILER = None
@@ -63,7 +49,27 @@ class ProfilingApplication(QApplication):
 
 
 class FrameProfiler:
-    """按帧统计引擎/渲染/UI 各阶段耗时，输出滚动平均/max/p95（ms 与百分比）。"""
+    """
+    逐帧统计 Physics / UI / Render / Qt 各阶段耗时，输出滚动平均与百分比。
+
+    作为 PhysicsEngine 的可选计时钩子（duck typing）：
+        record(stage: str, seconds: float)      # force/integrator/collision/trail/body_update/step
+        record_count(stage: str, count: int)    # merges
+
+    阶段定义（单位 ms）：
+        Physics        = 引擎 step 总耗时（固定 dt 子步，纯计算，无等待）
+            force      = GravitySolver.compute_accelerations（RK4 k1..k4 合计）
+            integrator = 积分器整段（含 force）
+            collision  = 碰撞检测 + 融合
+            trail      = 轨迹记录
+            body_update= step - (integrator + collision + trail)（引擎簿记余量）
+        UI callbacks   = 状态栏/检查器/参考系定时回调（包装 UI 方法）
+        Render CPU     = Render Wall - GPU Wait
+        GPU Wait       = paintGL 内 glFinish 实测
+        Render Wall    = paintGL 整段墙钟（诊断用）
+        Qt dispatch    = notify 总时长 - (Physics + UI callbacks + Render Wall)
+        Unaccounted    = 帧周期 - (Physics + UI + Render CPU + GPU Wait + Qt dispatch)
+    """
 
     def __init__(
         self,
@@ -73,7 +79,7 @@ class FrameProfiler:
         target_fps: float = 30.0,
     ):
         self.engine = engine
-        self.reference_frame = reference_frame
+        self.reference_frame = reference_frame  # 保留参数兼容（当前未使用）
         self.history = deque(maxlen=history_frames)
         self._frame = self._new_frame()
         self._frame_open = False
@@ -81,183 +87,97 @@ class FrameProfiler:
         self._fps_ema = 0.0
         self._attached = False
         self._ui_attached = False
-        self._originals = {}
+        self._ui_originals = []
         self._ui_timer_bindings = []
-        self._in_rk4 = False
-        self._stage_idx = 0
-        self._wrapped_integrator = None
         self._frame_listener = None
         self.target_fps = float(target_fps)
+
+    @staticmethod
+    def _new_frame() -> dict:
+        return {
+            'period': 0.0,
+            'physics': 0.0,
+            'force': 0.0,
+            'integrator': 0.0,
+            'collision': 0.0,
+            'trail': 0.0,
+            'body_update': 0.0,
+            'ui': 0.0,
+            'render': 0.0,          # Render Wall（paintGL 墙钟，含 GPU 等待）
+            'star': 0.0,
+            'trails': 0.0,
+            'render_bodies': 0.0,
+            'overlay': 0.0,
+            'gpu_sync': 0.0,        # GPU Wait（glFinish 实测）
+            'qt_events': 0.0,       # QApplication.notify 总分发墙钟
+            'substeps': 0,
+            'merges': 0,
+            'bodies': 0,
+        }
+
+    # ------------------------------------------------------------
+    # Physics 计时钩子（由 PhysicsEngine / GravitySolver 主动调用）
+    # ------------------------------------------------------------
+
+    def record(self, stage: str, seconds: float) -> None:
+        """接收引擎上报的阶段耗时（秒），不修改任何模拟状态。"""
+        frame = self._frame
+        if stage == 'step':
+            frame['physics'] += seconds
+            frame['substeps'] += 1
+            frame['bodies'] = len(self.engine.bodies)
+        elif stage == 'force':
+            frame['force'] += seconds
+        elif stage == 'integrator':
+            frame['integrator'] += seconds
+        elif stage == 'collision':
+            frame['collision'] += seconds
+        elif stage == 'trail':
+            frame['trail'] += seconds
+        elif stage == 'body_update':
+            frame['body_update'] += seconds
+
+    def record_count(self, stage: str, count: int) -> None:
+        """接收引擎上报的计数（如碰撞融合次数）。"""
+        if stage == 'merges':
+            self._frame['merges'] += count
 
     # ------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------
 
     def attach(self) -> None:
-        """包装引擎方法（只加计时，不改算法）。重复调用安全。"""
+        """安装引擎计时钩子（重复调用安全）。"""
         if self._attached:
             return
         global _ACTIVE_PROFILER
         _ACTIVE_PROFILER = self
-        engine = self.engine
-
-        orig_single = engine._single_step
-        def single_step_wrapper(engine_self):
-            t0 = time.perf_counter()
-            orig_single()
-            dt = time.perf_counter() - t0
-            self._frame['physics'] += dt
-            self._frame['substeps'] += 1
-            self._frame['bodies'] = len(engine.bodies)
-        self._originals['_single_step'] = orig_single
-        engine._single_step = types.MethodType(single_step_wrapper, engine)
-
-        # 引擎整帧总耗时（advance = 积分+碰撞+轨迹+循环/累加器余量）
-        orig_advance = engine.advance
-        def advance_wrapper(e_self, wall_seconds):
-            t0 = time.perf_counter()
-            result = orig_advance(wall_seconds)
-            self._frame['engine'] += time.perf_counter() - t0
-            return result
-        self._originals['advance'] = orig_advance
-        engine.advance = types.MethodType(advance_wrapper, engine)
-
-        orig_step = engine.step
-        def step_wrapper(e_self):
-            t0 = time.perf_counter()
-            result = orig_step()
-            self._frame['engine'] += time.perf_counter() - t0
-            return result
-        self._originals['step'] = orig_step
-        engine.step = types.MethodType(step_wrapper, engine)
-
-        orig_record = engine._record_trajectories
-        def record_wrapper(engine_self):
-            t0 = time.perf_counter()
-            orig_record()
-            self._frame['trajectory'] += time.perf_counter() - t0
-        self._originals['_record_trajectories'] = orig_record
-        engine._record_trajectories = types.MethodType(record_wrapper, engine)
-
-        solver = engine.gravity_solver
-        orig_acc = solver.compute_accelerations
-        def acc_wrapper(engine_self, bodies):
-            t0 = time.perf_counter()
-            result = orig_acc(bodies)
-            dt = time.perf_counter() - t0
-            self._frame['force'] += dt
-            if self._in_rk4:
-                stage = _RK4_STAGES[self._stage_idx % 4]
-                self._frame[stage] += dt
-                self._stage_idx += 1
-            return result
-        self._originals['compute_accelerations'] = orig_acc
-        solver.compute_accelerations = types.MethodType(acc_wrapper, solver)
-
-        handler = engine.collision_handler
-        orig_detect = handler.detect_collisions
-        def detect_wrapper(engine_self, bodies):
-            t0 = time.perf_counter()
-            result = orig_detect(bodies)
-            self._frame['detect'] += time.perf_counter() - t0
-            return result
-        self._originals['detect_collisions'] = orig_detect
-        handler.detect_collisions = types.MethodType(detect_wrapper, handler)
-
-        orig_resolve = handler.resolve_collisions
-        def resolve_wrapper(engine_self, bodies):
-            t0 = time.perf_counter()
-            result = orig_resolve(bodies)
-            dt = time.perf_counter() - t0
-            self._frame['collision'] += dt
-            self._frame['merges'] += max(0, len(bodies) - len(result))
-            return result
-        self._originals['resolve_collisions'] = orig_resolve
-        handler.resolve_collisions = types.MethodType(resolve_wrapper, handler)
-
-        self._wrap_integrator()
-
-        # 动量计算（质心位置/速度/总动量）——来自参考系与引擎只读查询
-        if self.reference_frame is not None:
-            for name in (
-                'compute_center_of_mass',
-                'compute_center_of_mass_velocity',
-                'compute_total_momentum',
-            ):
-                orig = getattr(self.reference_frame, name)
-                def make_momentum_wrap(orig_fn):
-                    def w(rf_self, bodies):
-                        t0 = time.perf_counter()
-                        result = orig_fn(bodies)
-                        self._frame['momentum'] += time.perf_counter() - t0
-                        return result
-                    return w
-                self._originals['rf_' + name] = orig
-                setattr(
-                    self.reference_frame, name,
-                    types.MethodType(make_momentum_wrap(orig), self.reference_frame),
-                )
-
-        orig_tm = engine.total_momentum
-        def tm_wrapper(e_self):
-            t0 = time.perf_counter()
-            result = orig_tm()
-            self._frame['momentum'] += time.perf_counter() - t0
-            return result
-        self._originals['total_momentum'] = orig_tm
-        engine.total_momentum = types.MethodType(tm_wrapper, engine)
-
-        # 能量计算（动能/势能/单体贴动能）
-        for name in ('kinetic_energy', 'potential_energy', 'body_kinetic_energy'):
-            orig = getattr(engine, name)
-            def make_energy_wrap(orig_fn):
-                def w(e_self, *args):
-                    t0 = time.perf_counter()
-                    result = orig_fn(*args)
-                    self._frame['energy'] += time.perf_counter() - t0
-                    return result
-                return w
-            self._originals['energy_' + name] = orig
-            setattr(engine, name, types.MethodType(make_energy_wrap(orig), engine))
-
+        self.engine.set_timing(self)
         self._attached = True
 
-    def _wrap_integrator(self) -> None:
-        """包装当前积分器的 step（RK4 额外按 k1..k4 阶段归因）。"""
-        integrator = self.engine.integrator
-        orig_step = integrator.step
-        is_rk4 = type(integrator).__name__ == 'RK4Integrator'
-
-        def step_wrapper(e_self, bodies, dt, **kwargs):
-            if is_rk4:
-                self._in_rk4 = True
-                self._stage_idx = 0
-            t0 = time.perf_counter()
-            try:
-                return orig_step(bodies, dt, **kwargs)
-            finally:
-                self._frame['integrator'] += time.perf_counter() - t0
-                if is_rk4:
-                    self._in_rk4 = False
-
-        self._originals['integrator_step'] = orig_step
-        integrator.step = types.MethodType(step_wrapper, integrator)
-        self._wrapped_integrator = integrator
-
     def refresh(self) -> None:
-        """引擎组件被替换（如 SceneManager 加载场景重建积分器）后重新挂接计时。"""
-        if self._attached and self.engine.integrator is not self._wrapped_integrator:
-            self._wrap_integrator()
+        """场景加载等引擎组件变更后重新挂接计时钩子（幂等）。"""
+        if self._attached:
+            self.engine.set_timing(self)
+
+    def detach(self) -> None:
+        """移除引擎计时钩子并恢复 UI 回调包装。"""
+        global _ACTIVE_PROFILER
+        if _ACTIVE_PROFILER is self:
+            _ACTIVE_PROFILER = None
+        self._detach_ui()
+        if self._attached:
+            self.engine.set_timing(None)
+            self._attached = False
 
     def attach_ui(self, window) -> None:
-        """包装主窗口 UI 定时回调与刷新（计入 UI 同步耗时）。"""
+        """包装主窗口 UI 定时回调与刷新（计入 UI callbacks 耗时；非物理部分）。"""
         if self._ui_attached:
             return
 
         targets = []
         for name in ('_update_status', '_update_reference_frame'):
-            obj = getattr(window, name, None)
-            if obj is not None:
+            if getattr(window, name, None) is not None:
                 targets.append((name, window))
         for widget_attr in ('inspector', 'body_list'):
             widget = getattr(window, widget_attr, None)
@@ -266,15 +186,18 @@ class FrameProfiler:
 
         for name, owner in targets:
             orig = getattr(owner, name)
+
             def make_ui_wrap(orig_fn):
                 def w(owner_self, *args, **kwargs):
                     t0 = time.perf_counter()
                     result = orig_fn(*args, **kwargs)
-                    self._frame['ui_sync'] += time.perf_counter() - t0
+                    self._frame['ui'] += time.perf_counter() - t0
                     return result
                 return w
-            setattr(owner, name, types.MethodType(make_ui_wrap(orig), owner))
-            self._originals['ui_' + repr(owner) + name] = orig
+
+            wrapped = types.MethodType(make_ui_wrap(orig), owner)
+            setattr(owner, name, wrapped)
+            self._ui_originals.append((owner, name, orig))
 
         # 信号槽捕获的是连接时的绑定方法，包装后需重新连接定时器
         for timer_attr, callback_attr in (
@@ -294,72 +217,32 @@ class FrameProfiler:
 
         self._ui_attached = True
 
-    def detach(self) -> None:
-        """恢复所有被包装的原始方法。"""
-        global _ACTIVE_PROFILER
-        if _ACTIVE_PROFILER is self:
-            _ACTIVE_PROFILER = None
-        engine = self.engine
-        if self._ui_attached:
-            for timer, orig in self._ui_timer_bindings:
-                try:
-                    timer.timeout.disconnect()
-                except TypeError:
-                    pass
-                timer.timeout.connect(orig)
-            self._ui_timer_bindings.clear()
-            self._ui_attached = False
-
-        if self._attached:
-            if '_single_step' in self._originals:
-                engine._single_step = self._originals['_single_step']
-            if '_record_trajectories' in self._originals:
-                engine._record_trajectories = self._originals['_record_trajectories']
-            if 'advance' in self._originals:
-                engine.advance = self._originals['advance']
-            if 'step' in self._originals:
-                engine.step = self._originals['step']
-            if 'compute_accelerations' in self._originals:
-                engine.gravity_solver.compute_accelerations = self._originals['compute_accelerations']
-            if 'detect_collisions' in self._originals:
-                engine.collision_handler.detect_collisions = self._originals['detect_collisions']
-            if 'resolve_collisions' in self._originals:
-                engine.collision_handler.resolve_collisions = self._originals['resolve_collisions']
-            if 'integrator_step' in self._originals:
-                engine.integrator.step = self._originals['integrator_step']
-            self._wrapped_integrator = None
-            if self.reference_frame is not None:
-                for name in (
-                    'compute_center_of_mass',
-                    'compute_center_of_mass_velocity',
-                    'compute_total_momentum',
-                ):
-                    key = 'rf_' + name
-                    if key in self._originals:
-                        setattr(self.reference_frame, name, self._originals[key])
-            if 'total_momentum' in self._originals:
-                engine.total_momentum = self._originals['total_momentum']
-            for name in ('kinetic_energy', 'potential_energy', 'body_kinetic_energy'):
-                key = 'energy_' + name
-                if key in self._originals:
-                    setattr(engine, name, self._originals[key])
-            self._originals.clear()
-            self._attached = False
-
-    # ------------------------------------------------------------
-    # 帧驱动（由 SimulationWidget 动画 tick 调用）
-    # ------------------------------------------------------------
+    def _detach_ui(self) -> None:
+        """恢复被包装的 UI 方法并重连原始定时器回调。"""
+        if not self._ui_attached:
+            return
+        for timer, orig in self._ui_timer_bindings:
+            try:
+                timer.timeout.disconnect()
+            except TypeError:
+                pass
+            timer.timeout.connect(orig)
+        self._ui_timer_bindings.clear()
+        for owner, name, orig in self._ui_originals:
+            setattr(owner, name, orig)
+        self._ui_originals.clear()
+        self._ui_attached = False
 
     def set_frame_listener(self, listener) -> None:
         """注册每帧回调（性能日志用），参数为刚关闭的帧字典。"""
         self._frame_listener = listener
 
+    # ------------------------------------------------------------
+    # 帧驱动（由 SimulationWidget 动画 tick 调用）
+    # ------------------------------------------------------------
+
     def frame_start(self) -> None:
-        """开始新帧：先把上一帧（含期间的渲染/UI 耗时）推入历史。"""
-        # 积分器可能被 SceneManager 替换（加载场景），检测到后自动重新挂接
-        if (self._wrapped_integrator is not None
-                and self.engine.integrator is not self._wrapped_integrator):
-            self._wrap_integrator()
+        """开始新帧：先把上一帧（含期间的渲染/UI/Qt 耗时）推入历史。"""
         now = time.perf_counter()
         period = 0.0
         if self._last_start is not None:
@@ -398,7 +281,7 @@ class FrameProfiler:
         return [f['period'] * 1000.0 for f in self.history if f['period'] > 0.0]
 
     def add_render(self, milliseconds: float) -> None:
-        """渲染总耗时上报（兼容接口，不细分阶段；内部统一按秒存储）。"""
+        """渲染总耗时上报（兼容接口，单位 ms；内部统一按秒存储）。"""
         self._frame['render'] += milliseconds / 1000.0
 
     def add_render_parts(
@@ -410,7 +293,12 @@ class FrameProfiler:
         overlay: float = 0.0,
         gpu_sync: float = 0.0,
     ) -> None:
-        """渲染各子阶段耗时上报（paintGL 内调用，单位 ms；内部统一按秒存储）。"""
+        """
+        渲染各子阶段耗时上报（paintGL 内调用，单位 ms；内部统一按秒存储）。
+
+        render   = paintGL 整段墙钟（Render Wall，含 GPU 等待）
+        gpu_sync = glFinish 实测等待（GPU Wait；不计入 Render CPU）
+        """
         self._frame['render'] += render / 1000.0
         self._frame['star'] += star / 1000.0
         self._frame['trails'] += trails / 1000.0
@@ -422,51 +310,21 @@ class FrameProfiler:
     # 统计输出
     # ------------------------------------------------------------
 
-    @staticmethod
-    def _new_frame() -> dict:
-        return {
-            'period': 0.0,
-            'physics': 0.0,
-            'engine': 0.0,
-            'qt_events': 0.0,
-            'force': 0.0,
-            'k1': 0.0, 'k2': 0.0, 'k3': 0.0, 'k4': 0.0,
-            'integrator': 0.0,
-            'collision': 0.0,
-            'detect': 0.0,
-            'trajectory': 0.0,
-            'momentum': 0.0,
-            'energy': 0.0,
-            'ui_sync': 0.0,
-            'render': 0.0,
-            'gpu_sync': 0.0,
-            'star': 0.0,
-            'trails': 0.0,
-            'render_bodies': 0.0,
-            'overlay': 0.0,
-            'substeps': 0,
-            'merges': 0,
-            'bodies': 0,
-        }
-
     def summary(self):
         """
         滚动统计（ms 与百分比，基准为帧周期；帧周期不可用时回退为已计入总和）。
 
         分类（对应 UI 面板）：
-          1 Force calculation / 2 Integrator(RK4) update / 3 Collision detection
-          4 Trail/history update / 5 Body state update（advance 内未细分余量）
-          6 Momentum calculation / 7 Energy calculation / 8 UI synchronization
-          9 Unaccounted Time（帧周期 - 1..8 - 渲染）
+            Physics / UI callbacks / Render CPU / GPU Wait / Render Wall /
+            Qt dispatch / Unaccounted
         """
         n = len(self.history)
         if n == 0:
             return None
 
-        keys = self._new_frame()
         avg = {}
         mx = {}
-        for key in keys:
+        for key in self._new_frame():
             vals = [f[key] for f in self.history]
             avg[key] = sum(vals) / n
             mx[key] = max(vals)
@@ -475,57 +333,33 @@ class FrameProfiler:
             return avg[key] * 1000.0
 
         physics = ms('physics')
-        engine_total = ms('engine')
         force = ms('force')
         integrator = ms('integrator')
         integrator_update = max(0.0, integrator - force)
         collision = ms('collision')
-        detect = ms('detect')
-        merge = max(0.0, collision - detect)
-        trajectory = ms('trajectory')
-        body_state = max(0.0, engine_total - integrator - collision - trajectory)
-        momentum = ms('momentum')
-        energy = ms('energy')
-        ui_total = ms('ui_sync')
-        ui_rest = max(0.0, ui_total - momentum - energy)
-        render = ms('render')
-        gpu_sync = min(ms('gpu_sync'), render)
-        # 渲染 CPU 耗时 = 渲染墙钟总耗时 - GPU 同步等待（等待不计入计算耗时）
-        render_cpu = max(0.0, render - gpu_sync)
+        trail = ms('trail')
+        body_update = ms('body_update')
+        ui = ms('ui')
+
+        # Render：统一口径
+        render_wall = ms('render')
+        gpu_wait = min(ms('gpu_sync'), render_wall)
+        render_cpu = max(0.0, render_wall - gpu_wait)
+
+        # Qt dispatch = notify 总时长 - 已单独计时的 Physics/UI/Render Wall
+        qt_total = ms('qt_events')
+        qt_dispatch = max(0.0, qt_total - physics - ui - render_wall)
 
         frame_period = (1000.0 / self._fps_ema) if self._fps_ema > 0.0 else 0.0
-        accounted = engine_total + momentum + energy + ui_rest + render_cpu
-        denominator = max(frame_period, accounted) if accounted > 0.0 else frame_period
-        # 9 Unaccounted Time = 帧周期 - (1..5 + 6 + 7 + 8 + 渲染)
+        accounted = physics + ui + render_cpu + gpu_wait + qt_dispatch
+        denominator = (
+            max(frame_period, accounted) if accounted > 0.0 else frame_period
+        )
         unaccounted = max(0.0, frame_period - accounted)
 
-        # Unaccounted Time 细分（仅 profiling，不改模拟逻辑；等待不计入计算耗时）：
-        #   a. Qt event processing   notify 分发总耗时 - 已计入回调耗时
-        #   b. sleep / frame limiter min(目标帧间隔 - 已计入工作量, 实际空闲)
-        #   c. OS scheduling waiting 其余等待（定时器合并/调度延迟）
-        #   d. GPU synchronization   paintGL 内 glFinish 实测（CPU 等 GPU）
-        #   e. unknown / untracked   归因异常余量（通常为 0）
-        # 五项合计恒等于 Unaccounted。
-        interval_ms = (1000.0 / self.target_fps) if self.target_fps > 0.0 else 0.0
-        work_per_frame = engine_total + ui_total + render
-        qt_proc_ms = max(0.0, ms('qt_events') - work_per_frame)
-        sleep_ms = (
-            min(max(0.0, interval_ms - work_per_frame), unaccounted)
-            if interval_ms > 0.0 else 0.0
-        )
-        remaining = max(0.0, unaccounted - qt_proc_ms - sleep_ms)
-        gpu_sync_split = min(gpu_sync, remaining)
-        remaining -= gpu_sync_split
-        os_wait_ms = remaining
-        unknown_ms = 0.0
-
-        frame_ms = [(f['physics'] + f['render']) * 1000.0 for f in self.history]
-        frame_sorted = sorted(frame_ms)
-        frame_max = frame_sorted[-1]
-        frame_p95 = frame_sorted[int(round(0.95 * (n - 1)))]
-
-        # 基于真实墙钟帧周期的分布统计（平均/p95/峰值）
-        periods_ms = [f['period'] * 1000.0 for f in self.history if f['period'] > 0.0]
+        periods_ms = [
+            f['period'] * 1000.0 for f in self.history if f['period'] > 0.0
+        ]
         if periods_ms:
             periods_sorted = sorted(periods_ms)
             period_avg = sum(periods_ms) / len(periods_ms)
@@ -544,44 +378,23 @@ class FrameProfiler:
         return {
             'fps': self._fps_ema,
             'frame_period': frame_period,
-            'frame_max': frame_max,
-            'frame_p95': frame_p95,
             'period_avg_ms': period_avg,
             'period_p95_ms': period_p95,
             'period_max_ms': period_max,
             'physics_ms': physics,
-            'physics_max': mx['physics'] * 1000.0,
-            'engine_ms': engine_total,
             'force_ms': force,
             'integrator_ms': integrator,
             'integrator_update_ms': integrator_update,
             'collision_ms': collision,
-            'collision_max': mx['collision'] * 1000.0,
-            'detect_ms': detect,
-            'merge_ms': merge,
-            'trajectory_ms': trajectory,
-            'body_state_ms': body_state,
-            'momentum_ms': momentum,
-            'energy_ms': energy,
-            'ui_sync_ms': ui_rest,
-            'ui_sync_total_ms': ui_total,
-            'ui_sync_max': mx['ui_sync'] * 1000.0,
-            'render_ms': render,
-            'render_net_ms': render_cpu,
-            'render_max': mx['render'] * 1000.0,
-            'render_star_ms': ms('star'),
-            'render_trails_ms': ms('trails'),
-            'render_bodies_ms': ms('render_bodies'),
-            'render_overlay_ms': ms('overlay'),
-            'other_ms': unaccounted,
+            'trail_ms': trail,
+            'body_update_ms': body_update,
+            'ui_ms': ui,
+            'render_cpu_ms': render_cpu,
+            'gpu_wait_ms': gpu_wait,
+            'render_wall_ms': render_wall,
+            'qt_total_ms': qt_total,
+            'qt_dispatch_ms': qt_dispatch,
             'unaccounted_ms': unaccounted,
-            'qt_events_ms': qt_proc_ms,
-            'sleep_ms': sleep_ms,
-            'os_wait_ms': os_wait_ms,
-            'gpu_sync_ms': gpu_sync_split,
-            'gpu_sync_total_ms': gpu_sync,
-            'unknown_ms': unknown_ms,
-            'stages_ms': [ms(k) for k in _RK4_STAGES],
             'substeps': avg['substeps'],
             'merges': avg['merges'],
             'bodies': avg['bodies'],
@@ -589,32 +402,37 @@ class FrameProfiler:
             'pct_force': pct(force),
             'pct_integrator': pct(integrator_update),
             'pct_collision': pct(collision),
-            'pct_trajectory': pct(trajectory),
-            'pct_body_state': pct(body_state),
-            'pct_momentum': pct(momentum),
-            'pct_energy': pct(energy),
-            'pct_ui_sync': pct(ui_rest),
-            'pct_render': pct(render_cpu),
-            'pct_other': pct(unaccounted),
+            'pct_trail': pct(trail),
+            'pct_body_update': pct(body_update),
+            'pct_ui': pct(ui),
+            'pct_render_cpu': pct(render_cpu),
+            'pct_gpu_wait': pct(gpu_wait),
+            'pct_render_wall': pct(render_wall),
+            'pct_qt': pct(qt_dispatch),
             'pct_unaccounted': pct(unaccounted),
         }
 
 
 class PerformanceLogger:
     """
-    逐帧性能日志：Frame / Physics / Render / Qt event / Wait。
+    逐帧性能日志：Frame / Physics / UI / Render CPU / GPU Wait / Render Wall / Qt / Unaccounted。
 
+    与屏幕 profiler 使用完全相同的定义：
+        Render CPU = Render Wall - GPU Wait；等待不计入 Render CPU。
     每帧输出一行到控制台与日志文件，并每秒输出一次统计：
     平均值（全量）、最大值、1 秒窗口平均值。
     """
 
-    _METRIC_NAMES = ('frame', 'physics', 'render', 'qt', 'wait')
+    _METRIC_NAMES = (
+        'frame', 'physics', 'ui', 'render_cpu',
+        'gpu_wait', 'render_wall', 'qt', 'unaccounted',
+    )
 
     def __init__(self, profiler, path=None, enabled=True):
         self.profiler = profiler
         self.enabled = enabled
-        self._sum = [0.0] * 5
-        self._max = [0.0] * 5
+        self._sum = [0.0] * len(self._METRIC_NAMES)
+        self._max = [0.0] * len(self._METRIC_NAMES)
         self._window = deque()
         self._count = 0
         self._last_stats_at = 0.0
@@ -623,21 +441,36 @@ class PerformanceLogger:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._file = open(path, 'a', encoding='utf-8')
             self._file.write(
-                '# ts frame_ms physics_ms render_ms qt_ms wait_ms\n'
+                '# ts frame_ms physics_ms ui_ms render_cpu_ms '
+                'gpu_wait_ms render_wall_ms qt_ms unaccounted_ms\n'
             )
             self._file.flush()
+
+    @staticmethod
+    def _frame_values(frame: dict):
+        """把原始帧字典换算为与 summary 同口径的指标（ms）。"""
+        period = frame['period'] * 1000.0
+        physics = frame['physics'] * 1000.0
+        ui = frame['ui'] * 1000.0
+        render_wall = frame['render'] * 1000.0
+        gpu_wait = min(frame['gpu_sync'] * 1000.0, render_wall)
+        render_cpu = max(0.0, render_wall - gpu_wait)
+        qt_total = frame['qt_events'] * 1000.0
+        qt_dispatch = max(0.0, qt_total - physics - ui - render_wall)
+        unaccounted = max(
+            0.0,
+            period - (physics + ui + render_cpu + gpu_wait + qt_dispatch),
+        )
+        return (
+            period, physics, ui, render_cpu,
+            gpu_wait, render_wall, qt_dispatch, unaccounted,
+        )
 
     def record(self, frame: dict) -> None:
         """记录一帧（由 FrameProfiler 帧监听器调用）。"""
         if not self.enabled:
             return
-        period = frame['period'] * 1000.0
-        physics = frame['engine'] * 1000.0
-        render = frame['render'] * 1000.0
-        ui = frame['ui_sync'] * 1000.0
-        qt = max(0.0, frame['qt_events'] * 1000.0 - physics - ui - render)
-        wait = max(0.0, period - physics - render - ui - qt)
-        values = (period, physics, render, qt, wait)
+        values = self._frame_values(frame)
 
         now = time.perf_counter()
         self._count += 1
@@ -649,15 +482,19 @@ class PerformanceLogger:
         while self._window and self._window[0][0] < now - 1.0:
             self._window.popleft()
 
+        period, physics, ui, render_cpu, gpu_wait, render_wall, qt, unaccounted = values
         line = (
-            f"frame={period:7.1f} physics={physics:7.2f} "
-            f"render={render:7.2f} qt={qt:7.2f} wait={wait:7.2f}"
+            f"frame={period:7.1f} physics={physics:7.2f} ui={ui:6.2f} "
+            f"render_cpu={render_cpu:7.2f} gpu_wait={gpu_wait:6.2f} "
+            f"render_wall={render_wall:7.2f} qt={qt:6.2f} "
+            f"unaccounted={unaccounted:6.2f}"
         )
         print(line)
         if self._file is not None:
             self._file.write(
-                f"{now:.3f} {period:.3f} {physics:.3f} "
-                f"{render:.3f} {qt:.3f} {wait:.3f}\n"
+                f"{now:.3f} {period:.3f} {physics:.3f} {ui:.3f} "
+                f"{render_cpu:.3f} {gpu_wait:.3f} {render_wall:.3f} "
+                f"{qt:.3f} {unaccounted:.3f}\n"
             )
             self._file.flush()
 
@@ -666,7 +503,7 @@ class PerformanceLogger:
             self._print_stats(now)
 
     def _print_stats(self, now: float) -> None:
-        win_sum = [0.0] * 5
+        win_sum = [0.0] * len(self._METRIC_NAMES)
         n_win = 0
         for ts, vals in self._window:
             if ts >= now - 1.0:

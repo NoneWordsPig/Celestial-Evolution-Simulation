@@ -6,6 +6,7 @@
 """
 
 import numpy as np
+import time
 from typing import List
 from .body import Body
 from .constants import G, SOFTENING
@@ -27,6 +28,17 @@ class GravitySolver:
             softening: 软化因子，防止奇点
         """
         self.softening = softening
+        # 可选计时钩子（None = 关闭，无额外开销）；不参与任何数值计算
+        self._timing = None
+    
+    def set_timing(self, timing) -> None:
+        """
+        安装或移除可选计时钩子（仅计时，不改变任何数值计算）。
+        
+        计时开启时 compute_accelerations 会上报 'force' 阶段耗时（秒）。
+        传 None 关闭，恢复无计时路径。
+        """
+        self._timing = timing
     
     def compute_accelerations(self, bodies: List[Body]) -> np.ndarray:
         """
@@ -42,6 +54,17 @@ class GravitySolver:
         Returns:
             accelerations: shape (N, 2) 的数组，每个天体的加速度
         """
+        timing = self._timing
+        if timing is None:
+            return self._compute_accelerations_impl(bodies)
+        t0 = time.perf_counter()
+        try:
+            return self._compute_accelerations_impl(bodies)
+        finally:
+            timing.record('force', time.perf_counter() - t0)
+    
+    def _compute_accelerations_impl(self, bodies: List[Body]) -> np.ndarray:
+        """加速度计算的数值实现；与计时无关，不改变任何数值。"""
         n = len(bodies)
         if n == 0:
             return np.zeros((0, 2), dtype=np.float64)

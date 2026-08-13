@@ -443,16 +443,6 @@ python -m unittest test_physics_units -v
 
 切换到科学模式，质量使用 `M_sun` / `kg`，位置使用 `AU` / `km` / `m`，速度使用 `km/s` 输入即可。
 
-## 贡献指南
-
-修改代码前请遵守 `AGENTS.md` 中的项目规则：
-
-- 确定受影响模块，只读取完成任务所需的文件，不要重写无关模块（Physics / UI / Renderer）。
-- 保持架构约束：物理不依赖 UI、单位系统独立、场景管理不做物理计算、Renderer 不修改状态、摄像机只做坐标转换、UI 不直接计算物理。
-- 保持数值规则：float64、归一化单位、引擎内 `G = 1`、不直接处理 SI 引力常数。
-- 保留 RK4；新积分器以独立 `Integrator` 类新增。
-- 运行针对性测试；任何物理修改必须进行数值验证。
-
 ## 致谢
 
 - Figure-8 轨道：A. Chenciner 与 R. Montgomery，《A remarkable periodic solution of the three-body problem in the case of equal masses》，Annals of Mathematics, 2000。

@@ -7,6 +7,7 @@
 
 from collections import deque
 
+import time
 import numpy as np
 from typing import List, Optional
 from .body import Body
@@ -51,6 +52,8 @@ class PhysicsEngine:
         self.gravity_solver = GravitySolver(softening=softening)
         self.collision_handler = CollisionHandler()
         self.integrator = IntegratorFactory.create(integrator_type, self.gravity_solver)
+        # 可选计时钩子（None = 关闭，无额外开销）；不参与任何数值计算
+        self._timing = None
         
         # 世界状态
         self.bodies: List[Body] = []
@@ -168,15 +171,42 @@ class PhysicsEngine:
             self._single_step()
         return steps
     
+    def set_timing(self, timing) -> None:
+        """
+        安装或移除可选计时钩子（仅计时，不改变任何数值行为与时间步长）。
+
+        timing 需提供（duck typing）：
+            record(stage: str, seconds: float)     # 阶段：force/integrator/collision/trail/body_update/step
+            record_count(stage: str, count: int)   # 计数：merges
+        传 None 时关闭计时，_single_step 走无计时快速路径。
+        """
+        self._timing = timing
+        self.gravity_solver.set_timing(timing)
+
     def _single_step(self) -> None:
         """
         执行单个物理时间步
-        
+
         顺序：积分 -> 碰撞处理 -> 轨迹记录 -> 时间推进
+        计时开启时主动上报各阶段耗时（不改变数值结果与时间步长）。
         """
         if len(self.bodies) == 0:
             return
-        
+        timing = self._timing
+        if timing is None:
+            # 无计时快速路径：与原始实现完全一致
+            self._run_physics_step()
+            return
+        t0 = time.perf_counter()
+        int_secs, col_secs, trail_secs = self._run_physics_step_timed(timing)
+        total = time.perf_counter() - t0
+        timing.record(
+            'body_update', max(0.0, total - int_secs - col_secs - trail_secs)
+        )
+        timing.record('step', total)
+
+    def _run_physics_step(self) -> None:
+        """执行物理步（无计时路径，顺序：积分 -> 碰撞 -> 轨迹 -> 时间推进）。"""
         # 1. 数值积分（更新位置和速度）
         if isinstance(self.integrator, VelocityVerletIntegrator):
             self._cached_accelerations = self.integrator.step(
@@ -184,17 +214,56 @@ class PhysicsEngine:
             )
         else:
             self.integrator.step(self.bodies, self.dt)
-        
+
         # 2. 碰撞检测与融合
         self.bodies = self.collision_handler.resolve_collisions(self.bodies)
         # 碰撞后加速度缓存失效
         self._cached_accelerations = None
-        
+
         # 3. 记录轨迹
         self._record_trajectories()
-        
+
         # 4. 推进模拟时间
         self.simulation_time += self.dt
+
+    def _run_physics_step_timed(self, timing):
+        """
+        带计时的物理步；与 _run_physics_step 数值等价。
+
+        Returns:
+            (integrator_secs, collision_secs, trail_secs)
+        """
+        t1 = time.perf_counter()
+        # 1. 数值积分（force 阶段由 GravitySolver 上报）
+        if isinstance(self.integrator, VelocityVerletIntegrator):
+            self._cached_accelerations = self.integrator.step(
+                self.bodies, self.dt, self._cached_accelerations
+            )
+        else:
+            self.integrator.step(self.bodies, self.dt)
+        int_secs = time.perf_counter() - t1
+        timing.record('integrator', int_secs)
+
+        # 2. 碰撞检测与融合
+        t1 = time.perf_counter()
+        before = len(self.bodies)
+        self.bodies = self.collision_handler.resolve_collisions(self.bodies)
+        col_secs = time.perf_counter() - t1
+        timing.record('collision', col_secs)
+        if len(self.bodies) < before:
+            timing.record_count('merges', before - len(self.bodies))
+        # 碰撞后加速度缓存失效
+        self._cached_accelerations = None
+
+        # 3. 记录轨迹
+        t1 = time.perf_counter()
+        self._record_trajectories()
+        trail_secs = time.perf_counter() - t1
+        timing.record('trail', trail_secs)
+
+        # 4. 推进模拟时间
+        self.simulation_time += self.dt
+        return int_secs, col_secs, trail_secs
     
     def _record_trajectories(self) -> None:
         """
