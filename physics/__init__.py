@@ -25,6 +25,9 @@ Physics 物理引擎模块
 
 from .body import Body
 from .gravity import GravitySolver
+from .gravity_opt import GravitySolverOpt
+from .integrator_opt import RK4IntegratorOpt
+from .performance_monitor import PerformanceMonitor
 from .collision import CollisionHandler
 from .integrator import VelocityVerletIntegrator, RK4Integrator, IntegratorFactory
 from .engine import PhysicsEngine
@@ -54,6 +57,9 @@ __all__ = [
     # 核心类
     'Body',
     'GravitySolver',
+'GravitySolverOpt',
+'RK4IntegratorOpt',
+'PerformanceMonitor',
     'CollisionHandler',
     'VelocityVerletIntegrator',
     'RK4Integrator',
@@ -95,3 +101,5 @@ __all__ = [
     'DEFAULT_ORBIT_DISTANCE',
     'DEFAULT_ORBITAL_VELOCITY',
 ]
+
+

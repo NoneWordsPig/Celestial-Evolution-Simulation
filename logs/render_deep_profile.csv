@@ -1,0 +1,5 @@
+﻿section,speed,round,paints,frames,period_avg_ms,period_p95_ms,physics_ms,render_wall_ms,render_cpu_ms,gpu_wait_ms,gpu_time_ms,ui_ms,qt_overhead_ms,idle_ms,busy_fraction,paints_per_frame,fps_paintgl,fps_update,ph_paintgl_total,ph_gl_clear,ph_trail_prepare,ph_trail_transform,ph_trail_upload_draw,ph_body_prepare,ph_body_upload_draw,ph_qpainter_begin,ph_scale_bar,ph_overlay,ph_qpainter_end,ph_other
+timing,1.0,0,99,81,50.26834197543607,78.95779999671504,7.400808635277007,34.45026789789008,34.45026789789008,0.0,1.110155061728395,0.23340617657213666,0.0,0.0,1.6573008318302342,1.2222222222222223,24.256309513242662,26.70644178730758,28.269434340693284,0.036034343830036994,2.784616159830205,0.5877252575245244,20.940330306084526,0.0312292926022877,1.4892535356480177,0.05291515051133253,0.1961484858930826,1.6049444452022212,0.008579795695653166,0.004870706235500749
+
+counts,speed,paints,frames,gl_calls,gl_vertex,gl_begin_end,np_calls,np_elems,qt_objects,qcolor,qpen,qfont,trail_samples,trail_sample_out,trail_points,body_draws
+counts,1.0,97,87,17349.340206185567,17283.340206185567,54.0,27.0,33306.68041237113,18.0,14.0,3.0,1.0,9.0,8326.670103092783,8326.670103092783,9.0

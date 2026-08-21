@@ -48,6 +48,141 @@ _UNIT_CIRCLE = tuple(
     for j in range(_CIRCLE_SEGMENTS + 1)
 )
 
+# GPU 性能分析模式（仅影响同步/计时方式，不改变任何绘制内容）：
+#   'none'   - 正常模式（默认）：paintGL 不调用 glFinish，不创建查询对象。
+#   'finish' - 兼容旧行为：paintGL 末尾 gl.glFinish()，实测 CPU 等待 GPU 时间。
+#   'timer'  - GL_ARB_timer_query / GL_EXT_timer_query：测量 GPU 实际执行时间，
+#              结果延迟多帧读回（非阻塞），不强制 CPU 等待 GPU。
+GPU_PROFILING_MODES = ('none', 'finish', 'timer')
+
+# GPU 计时查询环形缓冲帧数：延迟读回，避免每帧阻塞等待结果。
+_GPU_TIMER_RING = 8
+
+try:
+    # GL_ARB_timer_query 提供 GL_TIME_ELAPSED 与 64 位查询结果读回。
+    from OpenGL.GL.ARB.timer_query import (
+        GL_TIME_ELAPSED,
+        glGetQueryObjectui64v,
+    )
+except Exception:  # pragma: no cover - 老驱动回退到 EXT 扩展
+    try:
+        from OpenGL.GL.EXT.timer_query import (
+            GL_TIME_ELAPSED,
+            glGetQueryObjectui64v,
+        )
+    except Exception:  # pragma: no cover - 无任何 timer query 支持
+        GL_TIME_ELAPSED = None
+        glGetQueryObjectui64v = None
+
+
+def _query_result_ns(query_id: int) -> int:
+    """读取 GL_TIME_ELAPSED 查询结果（纳秒），优先 64 位接口。"""
+    if glGetQueryObjectui64v is not None:
+        try:
+            return int(glGetQueryObjectui64v(query_id, gl.GL_QUERY_RESULT))
+        except Exception:  # pragma: no cover - 驱动不支持 64 位查询
+            pass
+    return int(gl.glGetQueryObjectiv(query_id, gl.GL_QUERY_RESULT))
+
+
+class _GpuTimerQueryRing:
+    """
+    GL_TIME_ELAPSED 查询环形缓冲。
+
+    begin_frame() 先非阻塞读回 ring_size 帧前已结束的查询结果，再开启本帧查询；
+    end_frame() 结束查询。这样 CPU 不会等待 GPU 同步点，只会读到早已完成的旧结果。
+    """
+
+    def __init__(self, ring_size: int = _GPU_TIMER_RING):
+        self.ring_size = int(ring_size)
+        self.queries = []
+        self.index = 0
+        self.supported = False
+        self._elapsed_seconds = 0.0
+
+    def initialize(self) -> bool:
+        """在有效 GL 上下文中初始化；驱动不支持时返回 False（静默降级）。"""
+        if GL_TIME_ELAPSED is None:
+            return False
+        try:
+            ext = gl.glGetString(gl.GL_EXTENSIONS)
+            ext_text = (
+                ext.decode('latin1') if isinstance(ext, bytes) else str(ext or '')
+            )
+            if (
+                'GL_ARB_timer_query' not in ext_text
+                and 'GL_EXT_timer_query' not in ext_text
+            ):
+                return False
+            self.queries = gl.glGenQueries(self.ring_size)
+            self.supported = True
+            self.index = 0
+            self._elapsed_seconds = 0.0
+        except Exception:  # pragma: no cover - 任何失败均视为不支持
+            self.queries = []
+            self.supported = False
+        return self.supported
+
+    def begin_frame(self) -> None:
+        """读回 ring_size 帧前结束的查询（非阻塞），然后开始本帧 GPU 计时。"""
+        if not self.supported:
+            return
+        slot = self.index % self.ring_size
+        if self.index >= self.ring_size:
+            q = self.queries[slot]
+            try:
+                if gl.glGetQueryObjectiv(q, gl.GL_QUERY_RESULT_AVAILABLE):
+                    self._elapsed_seconds = _query_result_ns(q) * 1e-9
+                else:
+                    self._elapsed_seconds = 0.0
+            except Exception:  # pragma: no cover - 读回失败按 0 处理
+                self._elapsed_seconds = 0.0
+        else:
+            self._elapsed_seconds = 0.0
+        gl.glBeginQuery(GL_TIME_ELAPSED, self.queries[slot])
+
+    def end_frame(self) -> None:
+        """结束本帧 GPU 计时查询。"""
+        if not self.supported:
+            return
+        gl.glEndQuery(GL_TIME_ELAPSED)
+        self.index += 1
+
+    def take_elapsed(self) -> float:
+        """返回最近一次延迟读回的 GPU 执行时间（秒）。"""
+        return self._elapsed_seconds
+
+    def cleanup(self) -> None:
+        """删除查询对象（在 GL 上下文销毁前调用，失败可忽略）。"""
+        if self.supported and self.queries:
+            try:
+                gl.glDeleteQueries(self.queries)
+            except Exception:  # pragma: no cover - 上下文销毁时驱动自行回收
+                pass
+            self.queries = []
+            self.supported = False
+
+
+class RenderPhaseTimer:
+    """
+    paintGL 内部各阶段耗时累计器（仅 profiling 模式挂接，不改变任何绘制）。
+
+    phases[name] 累加秒数；paintGL 及各子方法在关键阶段边界调用 add()。
+    未挂接时所有 add 调用均为 None 判断，零开销。
+    """
+
+    __slots__ = ('phases',)
+
+    def __init__(self):
+        self.phases = {}
+
+    def add(self, name: str, seconds: float) -> None:
+        if seconds > 0.0:
+            self.phases[name] = self.phases.get(name, 0.0) + seconds
+
+    def clear(self) -> None:
+        self.phases.clear()
+
 
 class SimulationWidget(QOpenGLWidget):
     """
@@ -122,6 +257,13 @@ class SimulationWidget(QOpenGLWidget):
         self._profiler = None
         # 左上角性能分析覆盖层是否可见（视图菜单控制）
         self._show_profiler_overlay = True
+        # GPU 同步/计时策略（正常模式默认不强制同步）
+        self._gpu_profiling_mode = 'none'
+        self._gpu_timer = _GpuTimerQueryRing()
+        # paintGL 内部阶段计时器（None = 关闭；仅 profiling 使用）
+        self._render_phase_timer = None
+        # 上下文销毁时驱动会回收 GL 对象；这里仅做尽力清理（对象销毁后调用无效）
+        self.destroyed.connect(self._cleanup_gpu_timer)
         
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     
@@ -148,6 +290,22 @@ class SimulationWidget(QOpenGLWidget):
     def set_profiler(self, profiler) -> None:
         """挂接性能分析器（驱动帧计时，并上报渲染各子阶段耗时）。"""
         self._profiler = profiler
+
+    def set_gpu_profiling_mode(self, mode: str) -> None:
+        """
+        设置 GPU 性能分析模式（不影响画面与物理结果）：
+            'none'   - 正常模式：不调用 glFinish，不创建查询对象（默认）。
+            'finish' - 旧行为：paintGL 末尾 glFinish，实测 CPU 等待 GPU。
+            'timer'  - GL timer query 测量 GPU 实际执行时间，延迟读回，不阻塞 CPU。
+        """
+        mode = str(mode or 'none').strip().lower()
+        if mode not in GPU_PROFILING_MODES:
+            mode = 'none'
+        self._gpu_profiling_mode = mode
+
+    def set_render_phase_timer(self, timer) -> None:
+        """挂接 paintGL 内部阶段计时器（None = 关闭；不影响绘制与物理）。"""
+        self._render_phase_timer = timer
 
     def set_profiler_overlay_visible(self, visible: bool) -> None:
         """显示/隐藏左上角性能分析覆盖层（仅影响显示，不改任何状态）。"""
@@ -226,10 +384,18 @@ class SimulationWidget(QOpenGLWidget):
     
     def initializeGL(self):
         """初始化 OpenGL"""
+        # 上下文可能被重建（窗口移动/平台事件），先清理旧查询对象再分配
+        self._gpu_timer.cleanup()
         gl.glClearColor(0.0, 0.0, 0.0, 1.0)  # 纯黑背景
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glEnable(gl.GL_LINE_SMOOTH)
+        # GPU 计时查询（仅 profiling 模式使用；驱动不支持时静默降级为 none 行为）
+        self._gpu_timer.initialize()
+
+    def _cleanup_gpu_timer(self):
+        """GL 上下文销毁前清理计时查询对象。"""
+        self._gpu_timer.cleanup()
     
     def resizeGL(self, w: int, h: int):
         """调整大小"""
@@ -240,10 +406,24 @@ class SimulationWidget(QOpenGLWidget):
     def paintGL(self):
         """渲染"""
         profiler = self._profiler
+        phase = self._render_phase_timer
         if profiler is not None:
             t0 = time.perf_counter()
 
+        gpu_timer = (
+            self._gpu_timer
+            if self._gpu_profiling_mode == 'timer' and profiler is not None
+            else None
+        )
+        if gpu_timer is not None:
+            # 延迟读回 + 开启本帧 GPU 计时（非阻塞，无 glFinish）
+            gpu_timer.begin_frame()
+
+        if phase is not None:
+            t_ph = time.perf_counter()
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        if phase is not None:
+            phase.add('gl_clear', time.perf_counter() - t_ph)
         
         if profiler is not None:
             t_trails = time.perf_counter()
@@ -263,17 +443,38 @@ class SimulationWidget(QOpenGLWidget):
 
         if profiler is not None:
             t_end = time.perf_counter()
-            # GPU 同步等待：CPU 等 GPU 完成命令（仅分析，不改绘制）
-            t_gpu = time.perf_counter()
-            gl.glFinish()
-            gpu_sync = time.perf_counter() - t_gpu
+            gpu_sync = 0.0
+            gpu_time = 0.0
+            if gpu_timer is not None:
+                # GPU 实际执行时间（上一轮延迟读回，非阻塞）
+                gpu_timer.end_frame()
+                gpu_time = gpu_timer.take_elapsed() * 1000.0
+            elif self._gpu_profiling_mode == 'finish':
+                # 兼容旧行为：CPU 等 GPU 完成命令（仅 profiling 模式）
+                t_gpu = time.perf_counter()
+                gl.glFinish()
+                gpu_sync = (time.perf_counter() - t_gpu) * 1000.0
             profiler.add_render_parts(
                 render=(t_end - t0) * 1000.0,
                 trails=(t_bodies - t_trails) * 1000.0,
                 render_bodies=(t_overlay - t_bodies) * 1000.0,
                 overlay=(t_end - t_overlay) * 1000.0,
-                gpu_sync=gpu_sync * 1000.0,
+                gpu_sync=gpu_sync,
+                gpu_time=gpu_time,
             )
+        if phase is not None and profiler is not None:
+            # 阶段汇总：other = paintGL total - 已列出的子阶段
+            phase.add('paintgl_total', t_end - t0)
+            known = sum(
+                phase.phases.get(k, 0.0)
+                for k in (
+                    'gl_clear',
+                    'trail_prepare', 'trail_transform', 'trail_upload_draw',
+                    'body_prepare', 'body_upload_draw',
+                    'qpainter_begin', 'scale_bar', 'overlay', 'qpainter_end',
+                )
+            )
+            phase.add('other', max(0.0, (t_end - t0) - known))
     
     def _draw_bodies(self):
         """绘制所有天体"""
@@ -282,6 +483,9 @@ class SimulationWidget(QOpenGLWidget):
     
     def _draw_body(self, body: Body, index: int):
         """绘制单个天体（简洁明快风格）"""
+        phase = self._render_phase_timer
+        if phase is not None:
+            t0 = time.perf_counter()
         # 世界坐标 -> 屏幕坐标
         sx, sy = self.camera.world_to_screen(body.position[0], body.position[1])
         
@@ -304,6 +508,10 @@ class SimulationWidget(QOpenGLWidget):
         color = body.color
         glow_rx = ndc_rx * 1.3
         glow_ry = ndc_ry * 1.3
+        if phase is not None:
+            # body prepare = 相机/变换 + 半径/NDC/颜色计算（无 numpy，纯 Python 标量）
+            phase.add('body_prepare', time.perf_counter() - t0)
+            t1 = time.perf_counter()
 
         # 1. 柔和外发光（单层，低透明度，复用预计算单位圆）
         gl.glColor4f(color[0], color[1], color[2], 0.15)
@@ -329,6 +537,9 @@ class SimulationWidget(QOpenGLWidget):
             for ux, uy in _UNIT_CIRCLE[:-1]:
                 gl.glVertex2f(ndc_x + ndc_rx * 1.4 * ux, ndc_y + ndc_ry * 1.4 * uy)
             gl.glEnd()
+        if phase is not None:
+            # body upload+draw = immediate mode 顶点提交（本渲染器无 VBO/VAO）
+            phase.add('body_upload_draw', time.perf_counter() - t1)
 
     def _draw_trails(self):
         """绘制轨迹"""
@@ -339,9 +550,14 @@ class SimulationWidget(QOpenGLWidget):
     
     def _draw_trail(self, body: Body):
         """绘制单个轨迹（颜色 = 星体颜色，单条 GL_LINE_STRIP 渐变）"""
+        phase = self._render_phase_timer
+        if phase is not None:
+            t0 = time.perf_counter()
         pts = self._sample_trail(list(body.trail), self.trail_render_sampling)
         n = len(pts)
         if n < 2:
+            if phase is not None:
+                phase.add('trail_prepare', time.perf_counter() - t0)
             return
 
         color = body.color
@@ -351,6 +567,10 @@ class SimulationWidget(QOpenGLWidget):
 
         # 一次性向量化世界坐标 -> NDC（避免逐点 Python 坐标转换与临时对象）
         arr = np.asarray(pts, dtype=np.float64)
+        if phase is not None:
+            # trail prepare = 采样 + list -> numpy 转换（含每帧 list 拷贝）
+            phase.add('trail_prepare', time.perf_counter() - t0)
+            t1 = time.perf_counter()
         ndc = np.empty((m, 2), dtype=np.float64)
         cam = self.camera
         ndc[:, 0] = (
@@ -360,6 +580,10 @@ class SimulationWidget(QOpenGLWidget):
             -(arr[:, 1] - cam.center_y) * cam.zoom + h * 0.5
         ) / h * 2.0
         alphas = 0.15 + 0.65 * np.linspace(0.0, 1.0, m)
+        if phase is not None:
+            # trail transform = 向量化世界坐标 -> NDC + 颜色透明度数组
+            phase.add('trail_transform', time.perf_counter() - t1)
+            t2 = time.perf_counter()
 
         gl.glLineWidth(1.5)
         gl.glBegin(gl.GL_LINE_STRIP)
@@ -369,6 +593,9 @@ class SimulationWidget(QOpenGLWidget):
             )
             gl.glVertex2f(ndc[i, 0], ndc[i, 1])
         gl.glEnd()
+        if phase is not None:
+            # trail upload+draw = immediate mode 逐顶点提交（无 VBO/glBufferData）
+            phase.add('trail_upload_draw', time.perf_counter() - t2)
 
     @staticmethod
     def _sample_trail(pts: list, max_points: int) -> list:
@@ -383,16 +610,30 @@ class SimulationWidget(QOpenGLWidget):
     
     def _draw_overlay(self):
         """绘制 2D overlay（比例尺 + 性能分析，均为只读覆盖层）"""
+        phase = self._render_phase_timer
+        if phase is not None:
+            t0 = time.perf_counter()
         painter = QPainter(self)
+        if phase is not None:
+            phase.add('qpainter_begin', time.perf_counter() - t0)
+            t1 = time.perf_counter()
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         
         # 绘制比例尺
         self._draw_scale_bar(painter)
+        if phase is not None:
+            phase.add('scale_bar', time.perf_counter() - t1)
+            t2 = time.perf_counter()
 
         # 绘制性能分析（左上角覆盖层，不改变 UI 排版）
         self._draw_profiler_stats(painter)
+        if phase is not None:
+            phase.add('overlay', time.perf_counter() - t2)
+            t3 = time.perf_counter()
         
         painter.end()
+        if phase is not None:
+            phase.add('qpainter_end', time.perf_counter() - t3)
     
     def _draw_scale_bar(self, painter: QPainter):
         """绘制比例尺"""

@@ -124,6 +124,11 @@ class MainWindow(QMainWindow):
         self.profiler = FrameProfiler(self.engine, self.reference_frame)
         self.profiler.attach()
         self.sim_widget.set_profiler(self.profiler)
+        # GPU 同步/计时策略：默认正常模式不强制 GPU 同步；
+        # 仅当显式设置 GL_GPU_PROFILING=finish|timer 时启用 profiling 同步/计时。
+        self.sim_widget.set_gpu_profiling_mode(
+            os.environ.get('GL_GPU_PROFILING', 'none').strip().lower() or 'none'
+        )
         self.profiler.attach_ui(self)
 
         # 逐帧性能日志（每帧输出，每秒统计均值/峰值/1s 窗口均值）

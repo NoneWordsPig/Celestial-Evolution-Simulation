@@ -1,0 +1,24 @@
+*** Begin Patch
+*** Update File: ui/simulation_widget.py
+@@ -55,7 +55,16 @@ _GPU_TIMER_RING = 8
+ 
+ try:
+     # GL_ARB_timer_query 提供 GL_TIME_ELAPSED 与 64 位查询结果读回。
+-    from OpenGL.GL.ARB.timer_query import (
+-        GL_TIME_ELAPSED,
+-        glGetQueryObjectui64v,
+-    )
++    from OpenGL.GL.ARB.timer_query import (
++        GL_TIME_ELAPSED,
++        glGetQueryObjectui64v,
++    )
++except Exception:  # pragma: no cover - 老驱动回退到 EXT 扩展
++    try:
++        from OpenGL.GL.EXT.timer_query import (
++            GL_TIME_ELAPSED,
++            glGetQueryObjectui64v,
++        )
++    except Exception:  # pragma: no cover - 无任何 timer query 支持
++        GL_TIME_ELAPSED = None
++        glGetQueryObjectui64v = None
+*** End Patch

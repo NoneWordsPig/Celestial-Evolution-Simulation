@@ -8,6 +8,7 @@
 - 渲染计时由 SimulationWidget.paintGL 上报：
       Render Wall     = paintGL 整段墙钟耗时（含 glFinish 等待）
       GPU Wait        = paintGL 内 glFinish 实测等待（CPU 等 GPU）
+      GPU Time        = GL timer query 实测 GPU 实际执行时间（并行，非阻塞读回）
       Render CPU      = Render Wall - GPU Wait（真正渲染计算耗时）
   PerformanceLogger 与屏幕 profiler 使用同一套定义。
 - Qt 事件分发由 ProfilingApplication.notify 统计全事件分发墙钟（qt_events）；
@@ -65,7 +66,8 @@ class FrameProfiler:
             body_update= step - (integrator + collision + trail)（引擎簿记余量）
         UI callbacks   = 状态栏/检查器/参考系定时回调（包装 UI 方法）
         Render CPU     = Render Wall - GPU Wait
-        GPU Wait       = paintGL 内 glFinish 实测
+        GPU Wait       = paintGL 内 glFinish 实测（CPU 等 GPU）
+        GPU Time       = GL timer query 实测 GPU 执行时间（timer 模式，非阻塞）
         Render Wall    = paintGL 整段墙钟（诊断用）
         Qt dispatch    = notify 总时长 - (Physics + UI callbacks + Render Wall)
         Unaccounted    = 帧周期 - (Physics + UI + Render CPU + GPU Wait + Qt dispatch)
@@ -109,6 +111,7 @@ class FrameProfiler:
             'render_bodies': 0.0,
             'overlay': 0.0,
             'gpu_sync': 0.0,        # GPU Wait（glFinish 实测）
+            'gpu_time': 0.0,        # GPU Time（GL timer query 实测，并行）
             'qt_events': 0.0,       # QApplication.notify 总分发墙钟
             'substeps': 0,
             'merges': 0,
@@ -292,12 +295,14 @@ class FrameProfiler:
         render_bodies: float = 0.0,
         overlay: float = 0.0,
         gpu_sync: float = 0.0,
+        gpu_time: float = 0.0,
     ) -> None:
         """
         渲染各子阶段耗时上报（paintGL 内调用，单位 ms；内部统一按秒存储）。
 
         render   = paintGL 整段墙钟（Render Wall，含 GPU 等待）
         gpu_sync = glFinish 实测等待（GPU Wait；不计入 Render CPU）
+        gpu_time = GL timer query 实测 GPU 执行时间（并行；仅 timer 模式）
         """
         self._frame['render'] += render / 1000.0
         self._frame['star'] += star / 1000.0
@@ -305,6 +310,7 @@ class FrameProfiler:
         self._frame['render_bodies'] += render_bodies / 1000.0
         self._frame['overlay'] += overlay / 1000.0
         self._frame['gpu_sync'] += gpu_sync / 1000.0
+        self._frame['gpu_time'] += gpu_time / 1000.0
 
     # ------------------------------------------------------------
     # 统计输出
@@ -345,6 +351,7 @@ class FrameProfiler:
         render_wall = ms('render')
         gpu_wait = min(ms('gpu_sync'), render_wall)
         render_cpu = max(0.0, render_wall - gpu_wait)
+        gpu_time = ms('gpu_time')
 
         # Qt dispatch = notify 总时长 - 已单独计时的 Physics/UI/Render Wall
         qt_total = ms('qt_events')
@@ -391,6 +398,7 @@ class FrameProfiler:
             'ui_ms': ui,
             'render_cpu_ms': render_cpu,
             'gpu_wait_ms': gpu_wait,
+            'gpu_time_ms': gpu_time,
             'render_wall_ms': render_wall,
             'qt_total_ms': qt_total,
             'qt_dispatch_ms': qt_dispatch,
@@ -407,6 +415,7 @@ class FrameProfiler:
             'pct_ui': pct(ui),
             'pct_render_cpu': pct(render_cpu),
             'pct_gpu_wait': pct(gpu_wait),
+            'pct_gpu_time': pct(gpu_time),
             'pct_render_wall': pct(render_wall),
             'pct_qt': pct(qt_dispatch),
             'pct_unaccounted': pct(unaccounted),
