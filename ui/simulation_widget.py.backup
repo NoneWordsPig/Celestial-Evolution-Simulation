@@ -6,7 +6,6 @@ OpenGL 渲染视图，显示天体和轨迹
 纯黑背景 + 发光效果、轨迹渐变
 """
 
-import ctypes
 import time
 
 import numpy as np
@@ -20,7 +19,6 @@ from physics import (
     SimulationFormatter, ScientificFormatter,
     ReferenceFrame, ScaleBar
 )
-from ui.trail_renderer import TrailVertexBuilder
 
 
 # 倍率上限检测窗口（帧数）与判定比例：
@@ -186,34 +184,6 @@ class RenderPhaseTimer:
         self.phases.clear()
 
 
-class CpuPipelineProfiler:
-    """
-    paintGL full-lifecycle CPU-side profiler (profiling only; no behavior change).
-
-    phases[name] accumulates wall seconds; counts[name] accumulates occurrences.
-    The paintEvent wrapper measures Qt-internal overhead outside paintGL:
-    makeCurrent / GPU submit / swapBuffers / doneCurrent.
-    """
-
-    __slots__ = ('phases', 'counts')
-
-    def __init__(self):
-        self.phases = {}
-        self.counts = {}
-
-    def add(self, name: str, seconds: float) -> None:
-        if seconds > 0.0:
-            self.phases[name] = self.phases.get(name, 0.0) + seconds
-
-    def bump(self, name: str, n: int = 1) -> None:
-        if n > 0:
-            self.counts[name] = self.counts.get(name, 0) + n
-
-    def clear(self) -> None:
-        self.phases.clear()
-        self.counts.clear()
-
-
 class SimulationWidget(QOpenGLWidget):
     """
     OpenGL 模拟视图
@@ -261,9 +231,6 @@ class SimulationWidget(QOpenGLWidget):
         self._show_trails = True
         # 轨迹渲染采样上限：完整轨迹保存在引擎，渲染最多绘制该点数（均匀采样）
         self.trail_render_sampling = 1000
-        # 轨迹渲染路径：'batch'（builder + client arrays，默认）或 'legacy'（逐顶点 immediate mode）
-        self._trail_render_mode = 'batch'
-        self._trail_builder = TrailVertexBuilder(self.trail_render_sampling)
 
         # 性能覆盖层缓存（summary/行数据约 10 Hz 刷新，避免每帧重算）
         self._overlay_cache = None
@@ -293,8 +260,6 @@ class SimulationWidget(QOpenGLWidget):
         # GPU 同步/计时策略（正常模式默认不强制同步）
         self._gpu_profiling_mode = 'none'
         self._gpu_timer = _GpuTimerQueryRing()
-        # CPU-side render pipeline profiler (None = disabled; profiling only)
-        self._cpu_profiler = None
         # paintGL 内部阶段计时器（None = 关闭；仅 profiling 使用）
         self._render_phase_timer = None
         # 上下文销毁时驱动会回收 GL 对象；这里仅做尽力清理（对象销毁后调用无效）
@@ -342,19 +307,6 @@ class SimulationWidget(QOpenGLWidget):
         """挂接 paintGL 内部阶段计时器（None = 关闭；不影响绘制与物理）。"""
         self._render_phase_timer = timer
 
-    def set_cpu_profiler(self, profiler) -> None:
-        """Attach the CPU-side pipeline profiler (None disables; no behavior change)."""
-        self._cpu_profiler = profiler
-
-    def set_trail_render_mode(self, mode: str) -> None:
-        """轨迹渲染路径切换（不影响画面内容，仅改变提交方式）：
-        'batch' - 默认：TrailVertexBuilder 批量构建 + client arrays + glDrawArrays（无 VBO）
-        'legacy'- 旧路径：逐顶点 glColor4f/glVertex2f immediate mode
-        """
-        self._trail_render_mode = (
-            'legacy' if str(mode).strip().lower() == 'legacy' else 'batch'
-        )
-
     def set_profiler_overlay_visible(self, visible: bool) -> None:
         """显示/隐藏左上角性能分析覆盖层（仅影响显示，不改任何状态）。"""
         self._show_profiler_overlay = bool(visible)
@@ -394,9 +346,6 @@ class SimulationWidget(QOpenGLWidget):
 
     def _on_render_tick(self):
         """渲染回调：仅请求重绘，不推进模拟。"""
-        cpu = self._cpu_profiler
-        if cpu is not None:
-            cpu.bump('update_calls')
         self.update()
 
     def start_rate_check(self) -> None:
@@ -454,29 +403,10 @@ class SimulationWidget(QOpenGLWidget):
         self.camera.viewport_width = w
         self.camera.viewport_height = h
     
-    def paintEvent(self, event):
-        """
-        Wrap QOpenGLWidget paintEvent: makeCurrent + paintGL + swap + doneCurrent.
-        Measures wall time only; does not modify rendering behavior.
-        """
-        cpu = self._cpu_profiler
-        if cpu is None:
-            return super().paintEvent(event)
-        cpu.bump('paint_calls')
-        t0 = time.perf_counter()
-        try:
-            return super().paintEvent(event)
-        finally:
-            cpu.add('paint_event_total', time.perf_counter() - t0)
-
     def paintGL(self):
         """渲染"""
         profiler = self._profiler
         phase = self._render_phase_timer
-        cpu = self._cpu_profiler
-        if cpu is not None:
-            t_cpu_start = time.perf_counter()
-            cpu.bump('paintgl_calls')
         if profiler is not None:
             t0 = time.perf_counter()
 
@@ -491,13 +421,9 @@ class SimulationWidget(QOpenGLWidget):
 
         if phase is not None:
             t_ph = time.perf_counter()
-        if cpu is not None:
-            t_cpu_clear = time.perf_counter()
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
         if phase is not None:
             phase.add('gl_clear', time.perf_counter() - t_ph)
-        if cpu is not None:
-            cpu.add('gl_clear', time.perf_counter() - t_cpu_clear)
         
         if profiler is not None:
             t_trails = time.perf_counter()
@@ -549,41 +475,24 @@ class SimulationWidget(QOpenGLWidget):
                 )
             )
             phase.add('other', max(0.0, (t_end - t0) - known))
-        if cpu is not None:
-            cpu.add('paintgl_total', time.perf_counter() - t_cpu_start)
     
     def _draw_bodies(self):
         """绘制所有天体"""
-        cpu = self._cpu_profiler
-        if cpu is not None:
-            t_cpu = time.perf_counter()
-        bodies = self.engine.bodies
-        if cpu is not None:
-            cpu.add('state_read', time.perf_counter() - t_cpu)
-        for i, body in enumerate(bodies):
+        for i, body in enumerate(self.engine.bodies):
             self._draw_body(body, i)
     
     def _draw_body(self, body: Body, index: int):
         """绘制单个天体（简洁明快风格）"""
         phase = self._render_phase_timer
-        cpu = self._cpu_profiler
-        if cpu is not None:
-            t_cpu = time.perf_counter()
         if phase is not None:
             t0 = time.perf_counter()
         # 世界坐标 -> 屏幕坐标
         sx, sy = self.camera.world_to_screen(body.position[0], body.position[1])
-        if cpu is not None:
-            cpu.add('body_pos_conv', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
         
         # 计算屏幕半径
         render_radius_world = body.render_radius
         screen_radius = render_radius_world * self.camera.zoom
         screen_radius = max(screen_radius, self.min_render_radius_px)
-        if cpu is not None:
-            cpu.add('body_radius_conv', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
         
         # 转换为 NDC
         w = self.camera.viewport_width
@@ -595,17 +504,10 @@ class SimulationWidget(QOpenGLWidget):
         # 使用不同的 x/y 半径来补偿宽高比
         ndc_rx = screen_radius / w * 2.0
         ndc_ry = screen_radius / h * 2.0
-        if cpu is not None:
-            cpu.add('body_ndc', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
         
         color = body.color
         glow_rx = ndc_rx * 1.3
         glow_ry = ndc_ry * 1.3
-        if cpu is not None:
-            cpu.add('body_color_conv', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
-            cpu.bump('numpy_scalar_access', 5)
         if phase is not None:
             # body prepare = 相机/变换 + 半径/NDC/颜色计算（无 numpy，纯 Python 标量）
             phase.add('body_prepare', time.perf_counter() - t0)
@@ -638,102 +540,20 @@ class SimulationWidget(QOpenGLWidget):
         if phase is not None:
             # body upload+draw = immediate mode 顶点提交（本渲染器无 VBO/VAO）
             phase.add('body_upload_draw', time.perf_counter() - t1)
-        if cpu is not None:
-            cpu.add('body_draw', time.perf_counter() - t_cpu)
 
     def _draw_trails(self):
-        """绘制轨迹（默认批量：builder 生成 interleaved 缓冲 + client arrays 绘制）"""
-        cpu = self._cpu_profiler
-        if cpu is not None:
-            t_cpu = time.perf_counter()
-        bodies = self.engine.bodies
-        if cpu is not None:
-            cpu.add('state_read', time.perf_counter() - t_cpu)
-        if self._trail_render_mode == 'batch':
-            self._draw_trails_batch(bodies)
-            return
-        for body in bodies:
+        """绘制轨迹"""
+        for body in self.engine.bodies:
             if len(body.trail) < 2:
                 continue
             self._draw_trail(body)
-
-    def _draw_trails_batch(self, bodies):
-        """批量轨迹绘制：单次 builder 构建 interleaved 缓冲，client arrays 逐体绘制。
-
-        视觉与 legacy 路径完全一致（同 NDC 顶点 / RGBA / GL_LINE_STRIP / 线宽 1.5）；
-        仅把逐顶点 glColor4f/glVertex2f 提交改为 glVertexPointer/glColorPointer + glDrawArrays，
-        不引入 VBO。
-        """
-        phase = self._render_phase_timer
-        cpu = self._cpu_profiler
-        if phase is not None:
-            t0 = time.perf_counter()
-        if cpu is not None:
-            t_cpu = time.perf_counter()
-        # sampling limit 可能在运行时被外部修改，保持 builder 同步
-        if self._trail_builder.sampling_limit != self.trail_render_sampling:
-            self._trail_builder = TrailVertexBuilder(self.trail_render_sampling)
-        vertices, starts, counts = self._trail_builder.build(bodies, self.camera)
-        if cpu is not None:
-            cpu.add('trail_build', time.perf_counter() - t_cpu)
-        if phase is not None:
-            # builder 内完成采样 + numpy 转换 + NDC + alpha（合并原 trail_prepare / trail_transform）
-            phase.add('trail_prepare', time.perf_counter() - t0)
-            t1 = time.perf_counter()
-        if vertices.size == 0:
-            if phase is not None:
-                phase.add('trail_upload_draw', time.perf_counter() - t1)
-            return
-        self._gl_draw_trail_segments(vertices, starts, counts)
-        if phase is not None:
-            # client arrays + glDrawArrays 提交（原 trail_upload_draw）
-            phase.add('trail_upload_draw', time.perf_counter() - t1)
-        if cpu is not None:
-            cpu.add('trail_draw', time.perf_counter() - t_cpu)
-
-    @staticmethod
-    def _gl_draw_trail_segments(vertices: np.ndarray, starts: np.ndarray, counts: np.ndarray) -> None:
-        """client arrays 批量提交轨迹（固定管线，无 VBO）：每 body 一条 GL_LINE_STRIP。
-
-        vertices : (N, 6) float32 C-contiguous interleaved [x, y, r, g, b, a]（NDC + RGBA）
-        starts/counts : 每个 body 的起始顶点索引与顶点数（TrailVertexBuilder.build 输出）
-        """
-        if vertices.size == 0:
-            return
-        stride = vertices.strides[0]
-        base = vertices.ctypes.data
-        # client arrays 指针：顶点在缓冲头，颜色从第 3 个 float（x, y 之后）偏移 8 字节
-        vertex_ptr = ctypes.c_void_p(base)
-        color_ptr = ctypes.c_void_p(base + 8)
-        gl.glLineWidth(1.5)
-        gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
-        gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-        try:
-            gl.glVertexPointer(2, gl.GL_FLOAT, stride, vertex_ptr)
-            gl.glColorPointer(4, gl.GL_FLOAT, stride, color_ptr)
-            for start, count in zip(starts, counts):
-                gl.glDrawArrays(gl.GL_LINE_STRIP, int(start), int(count))
-        finally:
-            gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
-            gl.glDisableClientState(gl.GL_COLOR_ARRAY)
     
     def _draw_trail(self, body: Body):
         """绘制单个轨迹（颜色 = 星体颜色，单条 GL_LINE_STRIP 渐变）"""
         phase = self._render_phase_timer
-        cpu = self._cpu_profiler
-        if cpu is not None:
-            t_cpu = time.perf_counter()
         if phase is not None:
             t0 = time.perf_counter()
-        history = list(body.trail)
-        if cpu is not None:
-            cpu.add('trail_history_read', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
-            cpu.bump('trail_list_copy')
-        pts = self._sample_trail(history, self.trail_render_sampling)
-        if cpu is not None:
-            cpu.add('trail_sample', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
+        pts = self._sample_trail(list(body.trail), self.trail_render_sampling)
         n = len(pts)
         if n < 2:
             if phase is not None:
@@ -747,9 +567,6 @@ class SimulationWidget(QOpenGLWidget):
 
         # 一次性向量化世界坐标 -> NDC（避免逐点 Python 坐标转换与临时对象）
         arr = np.asarray(pts, dtype=np.float64)
-        if cpu is not None:
-            cpu.add('trail_numpy_convert', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
         if phase is not None:
             # trail prepare = 采样 + list -> numpy 转换（含每帧 list 拷贝）
             phase.add('trail_prepare', time.perf_counter() - t0)
@@ -763,9 +580,6 @@ class SimulationWidget(QOpenGLWidget):
             -(arr[:, 1] - cam.center_y) * cam.zoom + h * 0.5
         ) / h * 2.0
         alphas = 0.15 + 0.65 * np.linspace(0.0, 1.0, m)
-        if cpu is not None:
-            cpu.add('trail_vertex_gen', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
         if phase is not None:
             # trail transform = 向量化世界坐标 -> NDC + 颜色透明度数组
             phase.add('trail_transform', time.perf_counter() - t1)
@@ -782,9 +596,6 @@ class SimulationWidget(QOpenGLWidget):
         if phase is not None:
             # trail upload+draw = immediate mode 逐顶点提交（无 VBO/glBufferData）
             phase.add('trail_upload_draw', time.perf_counter() - t2)
-        if cpu is not None:
-            cpu.add('trail_draw', time.perf_counter() - t_cpu)
-            cpu.bump('numpy_scalar_access', m * 3)
 
     @staticmethod
     def _sample_trail(pts: list, max_points: int) -> list:
@@ -800,15 +611,9 @@ class SimulationWidget(QOpenGLWidget):
     def _draw_overlay(self):
         """绘制 2D overlay（比例尺 + 性能分析，均为只读覆盖层）"""
         phase = self._render_phase_timer
-        cpu = self._cpu_profiler
-        if cpu is not None:
-            t_cpu = time.perf_counter()
         if phase is not None:
             t0 = time.perf_counter()
         painter = QPainter(self)
-        if cpu is not None:
-            cpu.add('qpainter_begin', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
         if phase is not None:
             phase.add('qpainter_begin', time.perf_counter() - t0)
             t1 = time.perf_counter()
@@ -816,25 +621,17 @@ class SimulationWidget(QOpenGLWidget):
         
         # 绘制比例尺
         self._draw_scale_bar(painter)
-        if cpu is not None:
-            cpu.add('qpainter_scale_bar', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
         if phase is not None:
             phase.add('scale_bar', time.perf_counter() - t1)
             t2 = time.perf_counter()
 
         # 绘制性能分析（左上角覆盖层，不改变 UI 排版）
         self._draw_profiler_stats(painter)
-        if cpu is not None:
-            cpu.add('qpainter_overlay', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
         if phase is not None:
             phase.add('overlay', time.perf_counter() - t2)
             t3 = time.perf_counter()
         
         painter.end()
-        if cpu is not None:
-            cpu.add('qpainter_end', time.perf_counter() - t_cpu)
         if phase is not None:
             phase.add('qpainter_end', time.perf_counter() - t3)
     
@@ -876,11 +673,9 @@ class SimulationWidget(QOpenGLWidget):
         if self._profiler is None or not self._show_profiler_overlay:
             return
         now = time.perf_counter()
-        cpu = self._cpu_profiler
         cache = self._overlay_cache
         # 性能数据独立刷新：约 10 Hz 重算统计，其余帧直接复用缓存
         if cache is None or now - cache[0] >= 0.1:
-            t_cpu_recompute = time.perf_counter()
             summary = self._profiler.summary()
             if summary is None:
                 return
@@ -888,11 +683,7 @@ class SimulationWidget(QOpenGLWidget):
             self._overlay_cache = (
                 now, summary, self._profiler_rows(summary, periods)
             )
-            if cpu is not None:
-                cpu.add('qpainter_overlay_recompute', time.perf_counter() - t_cpu_recompute)
         _, summary, rows = self._overlay_cache
-        if cpu is not None:
-            t_cpu = time.perf_counter()
 
         if self._overlay_fonts is None:
             title_font = QFont("Consolas")
@@ -951,9 +742,6 @@ class SimulationWidget(QOpenGLWidget):
             elif row['type'] == 'table':
                 panel_h += len(row['rows']) * table_row_h + 4
         panel_h += margin
-        if cpu is not None:
-            cpu.add('qpainter_overlay_measure', time.perf_counter() - t_cpu)
-            t_cpu = time.perf_counter()
 
         # 半透明深色背景 + 边框，保证可读性且不遮挡交互
         painter.fillRect(x, y, int(panel_w), int(panel_h), PROFILER_BG)
@@ -1027,8 +815,6 @@ class SimulationWidget(QOpenGLWidget):
                         )
                     cur_y += table_row_h
                 cur_y += 4
-        if cpu is not None:
-            cpu.add('qpainter_overlay_draw', time.perf_counter() - t_cpu)
 
     def _draw_frame_trend(self, painter, x, y, w, h, periods):
         """绘制最近帧周期趋势（ms）：折线 + 平均值虚线。"""
