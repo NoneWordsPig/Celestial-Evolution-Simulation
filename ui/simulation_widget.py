@@ -6,7 +6,6 @@ OpenGL 渲染视图，显示天体和轨迹
 纯黑背景 + 发光效果、轨迹渐变
 """
 
-import ctypes
 import time
 
 import numpy as np
@@ -20,7 +19,7 @@ from physics import (
     SimulationFormatter, ScientificFormatter,
     ReferenceFrame, ScaleBar
 )
-from ui.trail_renderer import TrailVertexBuilder
+from ui.trail_renderer import TrailRenderer
 
 
 # 倍率上限检测窗口（帧数）与判定比例：
@@ -261,9 +260,9 @@ class SimulationWidget(QOpenGLWidget):
         self._show_trails = True
         # 轨迹渲染采样上限：完整轨迹保存在引擎，渲染最多绘制该点数（均匀采样）
         self.trail_render_sampling = 1000
-        # 轨迹渲染路径：'batch'（builder + client arrays，默认）或 'legacy'（逐顶点 immediate mode）
-        self._trail_render_mode = 'batch'
-        self._trail_builder = TrailVertexBuilder(self.trail_render_sampling)
+        # 轨迹渲染：默认 VBO 批量（TrailRenderer）；old_trail_renderer=True 回退旧逐顶点 immediate mode（A/B 调试）
+        self.old_trail_renderer = False
+        self._trail_renderer = TrailRenderer(self.trail_render_sampling)
 
         # 性能覆盖层缓存（summary/行数据约 10 Hz 刷新，避免每帧重算）
         self._overlay_cache = None
@@ -346,14 +345,9 @@ class SimulationWidget(QOpenGLWidget):
         """Attach the CPU-side pipeline profiler (None disables; no behavior change)."""
         self._cpu_profiler = profiler
 
-    def set_trail_render_mode(self, mode: str) -> None:
-        """轨迹渲染路径切换（不影响画面内容，仅改变提交方式）：
-        'batch' - 默认：TrailVertexBuilder 批量构建 + client arrays + glDrawArrays（无 VBO）
-        'legacy'- 旧路径：逐顶点 glColor4f/glVertex2f immediate mode
-        """
-        self._trail_render_mode = (
-            'legacy' if str(mode).strip().lower() == 'legacy' else 'batch'
-        )
+    def set_old_trail_renderer(self, enabled: bool) -> None:
+        """A/B 调试开关：True 使用旧逐顶点 immediate mode 渲染轨迹，False（默认）使用 VBO 批量渲染。"""
+        self.old_trail_renderer = bool(enabled)
 
     def set_profiler_overlay_visible(self, visible: bool) -> None:
         """显示/隐藏左上角性能分析覆盖层（仅影响显示，不改任何状态）。"""
@@ -443,10 +437,13 @@ class SimulationWidget(QOpenGLWidget):
         gl.glEnable(gl.GL_LINE_SMOOTH)
         # GPU 计时查询（仅 profiling 模式使用；驱动不支持时静默降级为 none 行为）
         self._gpu_timer.initialize()
+        # 轨迹 VBO
+        self._trail_renderer.initialize()
 
     def _cleanup_gpu_timer(self):
         """GL 上下文销毁前清理计时查询对象。"""
         self._gpu_timer.cleanup()
+        self._trail_renderer.cleanup()
     
     def resizeGL(self, w: int, h: int):
         """调整大小"""
@@ -544,6 +541,7 @@ class SimulationWidget(QOpenGLWidget):
                 for k in (
                     'gl_clear',
                     'trail_prepare', 'trail_transform', 'trail_upload_draw',
+                    'trail_upload', 'trail_draw',
                     'body_prepare', 'body_upload_draw',
                     'qpainter_begin', 'scale_bar', 'overlay', 'qpainter_end',
                 )
@@ -642,80 +640,27 @@ class SimulationWidget(QOpenGLWidget):
             cpu.add('body_draw', time.perf_counter() - t_cpu)
 
     def _draw_trails(self):
-        """绘制轨迹（默认批量：builder 生成 interleaved 缓冲 + client arrays 绘制）"""
+        """绘制轨迹（默认 VBO 批量；old_trail_renderer=True 回退旧逐顶点 immediate mode）"""
         cpu = self._cpu_profiler
         if cpu is not None:
             t_cpu = time.perf_counter()
         bodies = self.engine.bodies
         if cpu is not None:
             cpu.add('state_read', time.perf_counter() - t_cpu)
-        if self._trail_render_mode == 'batch':
-            self._draw_trails_batch(bodies)
+        if self.old_trail_renderer:
+            for body in bodies:
+                if len(body.trail) < 2:
+                    continue
+                self._draw_trail(body)
             return
-        for body in bodies:
-            if len(body.trail) < 2:
-                continue
-            self._draw_trail(body)
-
-    def _draw_trails_batch(self, bodies):
-        """批量轨迹绘制：单次 builder 构建 interleaved 缓冲，client arrays 逐体绘制。
-
-        视觉与 legacy 路径完全一致（同 NDC 顶点 / RGBA / GL_LINE_STRIP / 线宽 1.5）；
-        仅把逐顶点 glColor4f/glVertex2f 提交改为 glVertexPointer/glColorPointer + glDrawArrays，
-        不引入 VBO。
-        """
-        phase = self._render_phase_timer
-        cpu = self._cpu_profiler
-        if phase is not None:
-            t0 = time.perf_counter()
-        if cpu is not None:
-            t_cpu = time.perf_counter()
-        # sampling limit 可能在运行时被外部修改，保持 builder 同步
-        if self._trail_builder.sampling_limit != self.trail_render_sampling:
-            self._trail_builder = TrailVertexBuilder(self.trail_render_sampling)
-        vertices, starts, counts = self._trail_builder.build(bodies, self.camera)
-        if cpu is not None:
-            cpu.add('trail_build', time.perf_counter() - t_cpu)
-        if phase is not None:
-            # builder 内完成采样 + numpy 转换 + NDC + alpha（合并原 trail_prepare / trail_transform）
-            phase.add('trail_prepare', time.perf_counter() - t0)
-            t1 = time.perf_counter()
-        if vertices.size == 0:
-            if phase is not None:
-                phase.add('trail_upload_draw', time.perf_counter() - t1)
-            return
-        self._gl_draw_trail_segments(vertices, starts, counts)
-        if phase is not None:
-            # client arrays + glDrawArrays 提交（原 trail_upload_draw）
-            phase.add('trail_upload_draw', time.perf_counter() - t1)
+        # VBO 路径：trail data -> numpy 顶点 -> glBufferSubData -> 每 body 一次 glDrawArrays
+        if self._trail_renderer.sampling_limit != self.trail_render_sampling:
+            self._trail_renderer.sampling_limit = self.trail_render_sampling
+        self._trail_renderer.render(
+            bodies, self.camera, phase=self._render_phase_timer
+        )
         if cpu is not None:
             cpu.add('trail_draw', time.perf_counter() - t_cpu)
-
-    @staticmethod
-    def _gl_draw_trail_segments(vertices: np.ndarray, starts: np.ndarray, counts: np.ndarray) -> None:
-        """client arrays 批量提交轨迹（固定管线，无 VBO）：每 body 一条 GL_LINE_STRIP。
-
-        vertices : (N, 6) float32 C-contiguous interleaved [x, y, r, g, b, a]（NDC + RGBA）
-        starts/counts : 每个 body 的起始顶点索引与顶点数（TrailVertexBuilder.build 输出）
-        """
-        if vertices.size == 0:
-            return
-        stride = vertices.strides[0]
-        base = vertices.ctypes.data
-        # client arrays 指针：顶点在缓冲头，颜色从第 3 个 float（x, y 之后）偏移 8 字节
-        vertex_ptr = ctypes.c_void_p(base)
-        color_ptr = ctypes.c_void_p(base + 8)
-        gl.glLineWidth(1.5)
-        gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
-        gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-        try:
-            gl.glVertexPointer(2, gl.GL_FLOAT, stride, vertex_ptr)
-            gl.glColorPointer(4, gl.GL_FLOAT, stride, color_ptr)
-            for start, count in zip(starts, counts):
-                gl.glDrawArrays(gl.GL_LINE_STRIP, int(start), int(count))
-        finally:
-            gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
-            gl.glDisableClientState(gl.GL_COLOR_ARRAY)
     
     def _draw_trail(self, body: Body):
         """绘制单个轨迹（颜色 = 星体颜色，单条 GL_LINE_STRIP 渐变）"""

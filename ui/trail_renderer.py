@@ -1,20 +1,29 @@
 """
-Trail 渲染数据层（第一阶段重构：只改数据层，不动 OpenGL 绘制）
+Trail 渲染数据层 + VBO 批量渲染器
 
-将 immediate mode 的逐顶点数据准备（list 拷贝、逐点采样、逐点坐标转换）
-重构为纯 numpy 批量生成 interleaved float32 顶点：
+第一阶段（TrailVertexBuilder）：
+    将 immediate mode 的逐顶点数据准备（list 拷贝、逐点采样、逐点坐标转换）
+    重构为纯 numpy 批量生成 interleaved float32 顶点：
+        [x, y, r, g, b, a]   （NDC 坐标 + RGBA 颜色/透明度）
 
-    [x, y, r, g, b, a]   （NDC 坐标 + RGBA 颜色/透明度）
+第二阶段（TrailRenderer）：
+    VBO 生命周期管理 + 每帧 upload/draw：
+        trail data -> TrailVertexBuilder -> glBufferSubData
+        -> 每 body 一次 glDrawArrays(GL_LINE_STRIP)（暂不使用 glMultiDrawArrays）
 
 顶点公式与 ui/simulation_widget.py::_draw_trail 完全一致（逐位复现）：
     ndc_x = ((wx - camera.center_x) * camera.zoom + w * 0.5) / w * 2.0 - 1.0
     ndc_y = 1.0 - (-(wy - camera.center_y) * camera.zoom + h * 0.5) / h * 2.0
     alpha = 0.15 + 0.65 * np.linspace(0.0, 1.0, m)
 
-本模块不涉及任何 OpenGL 调用 / VBO / shader，也不修改 physics 与 trail 数据结构。
+本模块不修改 physics 与 trail 数据结构。
 """
 
+import ctypes
+import time
+
 import numpy as np
+import OpenGL.GL as gl
 
 
 class TrailVertexBuilder:
@@ -95,3 +104,106 @@ class TrailVertexBuilder:
         block[:, 3] = color[1]
         block[:, 4] = color[2]
         block[:, 5] = alphas
+
+
+class TrailRenderer:
+    """VBO 批量渲染器（第二阶段：替换 immediate mode 逐顶点提交）。
+
+    职责：
+      - VBO 创建 / 销毁（initialize / cleanup，需在有效 GL 上下文中调用）
+      - 每帧：TrailVertexBuilder 生成 interleaved 顶点 -> glBufferSubData 上传
+      - 绘制：每 body 一次 glDrawArrays(GL_LINE_STRIP)（暂不使用 glMultiDrawArrays）
+
+    视觉与旧路径完全一致：同 NDC 顶点 / RGBA / GL_LINE_STRIP / 线宽 1.5 / blending。
+    """
+
+    def __init__(self, sampling_limit: int = 1000) -> None:
+        self.builder = TrailVertexBuilder(sampling_limit)
+        self._vbo = None
+        self._capacity_bytes = 0
+
+    @property
+    def sampling_limit(self) -> int:
+        return self.builder.sampling_limit
+
+    @sampling_limit.setter
+    def sampling_limit(self, value: int) -> None:
+        self.builder.sampling_limit = int(value)
+
+    @property
+    def vbo(self):
+        """当前 VBO id（未初始化或已清理时为 None）。"""
+        return self._vbo
+
+    def initialize(self) -> None:
+        """在 GL 上下文就绪时创建 VBO（防重复；会先清理旧对象）。"""
+        self.cleanup()
+        ids = gl.glGenBuffers(1)
+        self._vbo = int(ids[0]) if not isinstance(ids, (int, np.integer)) else int(ids)
+        self._capacity_bytes = 0
+
+    def cleanup(self) -> None:
+        """删除 VBO（上下文销毁时驱动也会回收，这里尽力清理）。"""
+        if self._vbo is not None:
+            try:
+                gl.glDeleteBuffers(1, [self._vbo])
+            except Exception:  # pragma: no cover - 上下文已销毁时忽略
+                pass
+            self._vbo = None
+        self._capacity_bytes = 0
+
+    def render(self, bodies, camera, phase=None, line_width: float = 1.5):
+        """每帧渲染：trail data -> numpy 顶点 -> glBufferSubData -> 每 body 一次 glDrawArrays。
+
+        phase : 可选，提供 add(name, seconds)（如 RenderPhaseTimer），
+                记录 trail_prepare / trail_upload / trail_draw 三个阶段耗时。
+        返回  (顶点数, 参与绘制的 body 数)；无可见轨迹时返回 (0, 0)。
+        """
+        if self._vbo is None:
+            raise RuntimeError('TrailRenderer.initialize() 必须在有效 GL 上下文中先行调用')
+        if phase is not None:
+            t0 = time.perf_counter()
+        vertices, starts, counts = self.builder.build(bodies, camera)
+        if phase is not None:
+            phase.add('trail_prepare', time.perf_counter() - t0)
+        if vertices.size == 0:
+            return 0, 0
+        if phase is not None:
+            t1 = time.perf_counter()
+        self._upload(vertices)
+        if phase is not None:
+            phase.add('trail_upload', time.perf_counter() - t1)
+            t2 = time.perf_counter()
+        self._draw(starts, counts, line_width)
+        if phase is not None:
+            phase.add('trail_draw', time.perf_counter() - t2)
+        return int(vertices.shape[0]), int(len(starts))
+
+    def _upload(self, vertices: np.ndarray) -> None:
+        """VBO 上传：容量不足时 glBufferData 扩容，否则每帧 glBufferSubData。"""
+        nbytes = vertices.nbytes
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._vbo)
+        if nbytes > self._capacity_bytes:
+            gl.glBufferData(
+                gl.GL_ARRAY_BUFFER, nbytes, vertices, gl.GL_DYNAMIC_DRAW
+            )
+            self._capacity_bytes = nbytes
+        else:
+            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, nbytes, vertices)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+
+    def _draw(self, starts, counts, line_width: float) -> None:
+        """client arrays 指向已绑定 VBO（offset 为字节偏移），每 body 一条 GL_LINE_STRIP。"""
+        gl.glLineWidth(line_width)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._vbo)
+        gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glEnableClientState(gl.GL_COLOR_ARRAY)
+        try:
+            gl.glVertexPointer(2, gl.GL_FLOAT, 24, ctypes.c_void_p(0))
+            gl.glColorPointer(4, gl.GL_FLOAT, 24, ctypes.c_void_p(8))
+            for start, count in zip(starts, counts):
+                gl.glDrawArrays(gl.GL_LINE_STRIP, int(start), int(count))
+        finally:
+            gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
+            gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)

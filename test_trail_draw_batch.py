@@ -1,22 +1,24 @@
 """
-Trail 渲染接入单元测试（第二阶段：batch client arrays 绘制路径）
+TrailRenderer（VBO 批量渲染）单元测试（第二阶段）
 
 用 mock GL 记录器验证生产路径（无真实 GL 上下文 / 无 Qt 实例化）：
-  - batch 路径（默认）顶点数据与 legacy 参考实现逐位一致（误差 < 1e-6）
-  - GL 调用序列：client arrays 指针（stride / 颜色偏移正确）+ 每 body 一次 glDrawArrays
-  - legacy 路径仍走逐顶点 immediate mode（glBegin / glColor4f / glVertex2f）
-  - 短轨迹跳过、sampling limit 同步、render phase 计时键输出
+  - VBO 生命周期：initialize 创建（防重复）/ cleanup 删除
+  - 每帧流程：builder 顶点 -> glBufferData(首次扩容)/glBufferSubData -> 每 body 一次 glDrawArrays
+  - VBO 内指针偏移（0 / 8 字节）、stride、client states、line width、GL_LINE_STRIP
+  - profiler 阶段键：trail_prepare / trail_upload / trail_draw
+  - widget 层：old_trail_renderer=True 回退逐顶点 immediate mode；False（默认）走 VBO 路径
+  - 顶点数据与 legacy 参考实现逐位一致（< 1e-6）
 """
 
 import ctypes
 import unittest
-from collections import deque
 from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
 
-from physics import Camera
+import ui.trail_renderer as tr
+from ui.trail_renderer import TrailRenderer
 import ui.simulation_widget as sw
 from ui.simulation_widget import SimulationWidget
 from test_trail_builder import _old_vertex_buffer, _make_body, _make_camera
@@ -24,6 +26,8 @@ from test_trail_builder import _old_vertex_buffer, _make_body, _make_camera
 
 # GL 常量整数值（与 OpenGL.GL 一致，供 mock 断言使用）
 GL_LINE_STRIP = 0x0B03
+GL_ARRAY_BUFFER = 0x8892
+GL_DYNAMIC_DRAW = 0x88E8
 GL_VERTEX_ARRAY = 0x8074
 GL_COLOR_ARRAY = 0x8076
 GL_FLOAT = 0x1406
@@ -33,11 +37,14 @@ class GlRecorder:
     """记录 GL 调用的 mock；GL_ 常量直接作为类属性提供。"""
 
     GL_LINE_STRIP = GL_LINE_STRIP
+    GL_ARRAY_BUFFER = GL_ARRAY_BUFFER
+    GL_DYNAMIC_DRAW = GL_DYNAMIC_DRAW
     GL_VERTEX_ARRAY = GL_VERTEX_ARRAY
     GL_COLOR_ARRAY = GL_COLOR_ARRAY
     GL_FLOAT = GL_FLOAT
 
-    def __init__(self):
+    def __init__(self, vbo_id=7):
+        self.vbo_id = vbo_id
         self.calls = []
 
     def __getattr__(self, name):
@@ -46,6 +53,8 @@ class GlRecorder:
 
         def _record(*args):
             self.calls.append((name, args))
+            if name == 'glGenBuffers':
+                return [self.vbo_id]
 
         return _record
 
@@ -53,161 +62,201 @@ class GlRecorder:
         return [args for call_name, args in self.calls if call_name == name]
 
 
-def _make_widget(bodies, camera, render_mode='batch', sampling=1000):
+def _ptr_value(ptr) -> int:
+    value = ctypes.cast(ptr, ctypes.c_void_p).value
+    return 0 if value is None else value
+
+
+def _make_widget(bodies, camera, old_renderer=False, sampling=1000):
     """用 __new__ 构造最小 SimulationWidget（不创建 QWidget / GL 上下文）。"""
     w = SimulationWidget.__new__(SimulationWidget)
     w.engine = SimpleNamespace(bodies=bodies)
     w.camera = camera
-    w._trail_render_mode = render_mode
+    w.old_trail_renderer = old_renderer
     w.trail_render_sampling = sampling
-    w._trail_builder = sw.TrailVertexBuilder(sampling)
+    w._trail_renderer = TrailRenderer(sampling)
     w._render_phase_timer = None
     w._cpu_profiler = None
     return w
 
 
-def _ptr_value(ptr) -> int:
-    return ctypes.cast(ptr, ctypes.c_void_p).value
+def _bodies(seed=11):
+    """3 个 body：点数 3 / 1000 / 1500（1500 被 maxlen=1000 截断为 1000）。"""
+    rng = np.random.default_rng(seed)
+    colors = [
+        (1.0, 0.8, 0.2), (0.9, 0.9, 0.9), (0.6, 0.8, 1.0),
+    ]
+    return [
+        _make_body(f'b{i}', rng.uniform(-1e4, 1e4, (n, 2)), color=colors[i])
+        for i, n in enumerate((3, 1000, 1500))
+    ]
 
 
-class TestBatchDrawPath(unittest.TestCase):
+class TestTrailRenderer(unittest.TestCase):
     def setUp(self):
         self.camera = _make_camera()
+        self.recorder = GlRecorder()
 
-    def _bodies(self, seed=11):
-        rng = np.random.default_rng(seed)
-        colors = [
-            (1.0, 0.8, 0.2), (0.9, 0.9, 0.9), (0.6, 0.8, 1.0),
-        ]
-        bodies = []
-        for i, n in enumerate((3, 1000, 1500)):
-            body = _make_body(
-                f'b{i}',
-                rng.uniform(-1e4, 1e4, (n, 2)),
-                color=colors[i],
-            )
-            bodies.append(body)
-        return bodies
+    def _renderer(self):
+        r = TrailRenderer(1000)
+        with mock.patch.object(tr, 'gl', self.recorder):
+            r.initialize()
+        return r
 
-    def test_batch_vertices_match_legacy(self):
-        """batch 生成的 interleaved 顶点与 legacy 参考实现逐位一致。"""
-        bodies = self._bodies()
-        w = _make_widget(bodies, self.camera)
-        vertices, starts, counts = w._trail_builder.build(bodies, self.camera)
+    def test_initialize_cleanup(self):
+        r = TrailRenderer()
+        with mock.patch.object(tr, 'gl', self.recorder):
+            r.initialize()
+            self.assertEqual(r.vbo, 7)
+            r.initialize()  # 防重复：先清理再重建
+            self.assertEqual(len(self.recorder.named('glGenBuffers')), 2)
+            r.cleanup()
+            self.assertIsNone(r.vbo)
+            self.assertEqual(len(self.recorder.named('glDeleteBuffers')), 2)
+
+    def test_cleanup_without_initialize_is_noop(self):
+        r = TrailRenderer()
+        with mock.patch.object(tr, 'gl', self.recorder):
+            r.cleanup()
+        self.assertEqual(self.recorder.calls, [])
+
+    def test_render_without_initialize_raises(self):
+        r = TrailRenderer()
+        with mock.patch.object(tr, 'gl', self.recorder):
+            with self.assertRaises(RuntimeError):
+                r.render(_bodies(), self.camera)
+
+    def test_render_upload_draw_flow(self):
+        bodies = _bodies()
+        r = self._renderer()
+        with mock.patch.object(tr, 'gl', self.recorder):
+            n, k = r.render(bodies, self.camera)
+            n2, k2 = r.render(bodies, self.camera)
+
+        self.assertEqual((n, k), (2003, 3))
+        self.assertEqual((n2, k2), (2003, 3))
+
+        # 首帧容量不足：glBufferData 扩容；第二帧走 glBufferSubData
+        self.assertEqual(len(self.recorder.named('glBufferData')), 1)
+        subdata = self.recorder.named('glBufferSubData')
+        self.assertEqual(len(subdata), 1)
+        data_args = self.recorder.named('glBufferData')[0]
+        self.assertEqual(data_args[0], GL_ARRAY_BUFFER)
+        self.assertEqual(data_args[1], 2003 * 24)
+        self.assertEqual(data_args[3], GL_DYNAMIC_DRAW)
+        sub_args = subdata[0]
+        self.assertEqual(sub_args[0], GL_ARRAY_BUFFER)
+        self.assertEqual(sub_args[1], 0)
+        self.assertEqual(sub_args[2], 2003 * 24)
+
+        # 每 body 一次 glDrawArrays(GL_LINE_STRIP, start, count)
+        draws = self.recorder.named('glDrawArrays')
+        self.assertEqual(len(draws), 6)  # 两帧 x 3 body
+        expected = [(GL_LINE_STRIP, 0, 3), (GL_LINE_STRIP, 3, 1000),
+                    (GL_LINE_STRIP, 1003, 1000)] * 2
+        self.assertEqual(draws, expected)
+
+        # 指针：VBO 内字节偏移 0 / 8，stride 24
+        vp = self.recorder.named('glVertexPointer')[0]
+        self.assertEqual(vp[:3], (2, GL_FLOAT, 24))
+        self.assertEqual(_ptr_value(vp[3]), 0)
+        cp = self.recorder.named('glColorPointer')[0]
+        self.assertEqual(cp[:3], (4, GL_FLOAT, 24))
+        self.assertEqual(_ptr_value(cp[3]), 8)
+
+        # 线宽 / client states
+        self.assertEqual(self.recorder.named('glLineWidth')[0], (1.5,))
+        enabled = self.recorder.named('glEnableClientState')
+        disabled = self.recorder.named('glDisableClientState')
+        # 两帧，每帧 enable/disable 一次 vertex + color
+        self.assertEqual(len(enabled), 4)
+        self.assertEqual(len(disabled), 4)
+        self.assertEqual(
+            [a[0] for a in enabled[:2]], [GL_VERTEX_ARRAY, GL_COLOR_ARRAY]
+        )
+        self.assertEqual(
+            [a[0] for a in disabled[:2]], [GL_VERTEX_ARRAY, GL_COLOR_ARRAY]
+        )
+
+    def test_vertex_data_matches_legacy(self):
+        bodies = _bodies()
+        r = self._renderer()
+        vertices, starts, counts = r.builder.build(bodies, self.camera)
         ref = np.vstack([
             _old_vertex_buffer(b, self.camera) for b in bodies
             if len(b.trail) >= 2
         ])
         self.assertEqual(vertices.shape, ref.shape)
         np.testing.assert_allclose(vertices, ref, rtol=0.0, atol=1e-6)
+        self.assertEqual(list(starts), [0, 3, 1003])
+        self.assertEqual(list(counts), [3, 1000, 1000])
 
-    def test_batch_gl_call_sequence(self):
-        """batch 路径：client arrays 指针 + 每 body 一次 glDrawArrays。"""
-        bodies = self._bodies()
-        w = _make_widget(bodies, self.camera)
-        vertices, starts, counts = w._trail_builder.build(bodies, self.camera)
+    def test_phase_keys(self):
+        bodies = _bodies()
+        r = self._renderer()
+        timer = sw.RenderPhaseTimer()
+        with mock.patch.object(tr, 'gl', self.recorder):
+            r.render(bodies, self.camera, phase=timer)
+        for key in ('trail_prepare', 'trail_upload', 'trail_draw'):
+            self.assertIn(key, timer.phases)
 
-        recorder = GlRecorder()
-        with mock.patch.object(sw, 'gl', recorder):
-            w._draw_trails()
-
-        stride = vertices.strides[0]
-        self.assertEqual(stride, 24)
-        draws = recorder.named('glDrawArrays')
-        self.assertEqual(len(draws), len(starts))
-        # 每体一条 GL_LINE_STRIP，start/count 与 builder 输出一致
-        expected_draws = list(zip(starts.tolist(), counts.tolist()))
-        actual_draws = [(args[1], args[2]) for args in draws]
-        self.assertEqual(actual_draws, expected_draws)
-
-        # 指针：stride 正确，颜色指针 = 顶点指针 + 2 * 4 字节
-        vp = recorder.named('glVertexPointer')
-        self.assertEqual(len(vp), 1)
-        self.assertEqual(vp[0][:3], (2, GL_FLOAT, 24))
-        vertex_ptr = vp[0][3]
-
-        cp = recorder.named('glColorPointer')
-        self.assertEqual(len(cp), 1)
-        self.assertEqual(cp[0][:3], (4, GL_FLOAT, 24))
-        color_ptr = cp[0][3]
-        # interleaved [x, y, r, g, b, a]：颜色指针必须指向同一缓冲偏移 8 字节处
-        self.assertEqual(_ptr_value(color_ptr), _ptr_value(vertex_ptr) + 8)
-
-        # 顺序：lineWidth -> enable vertex/color -> pointer -> draws -> disable
-        seq = [name for name, _ in recorder.calls]
-        self.assertEqual(seq[0], 'glLineWidth')
-        self.assertEqual(seq[1], 'glEnableClientState')
-        self.assertEqual(seq[2], 'glEnableClientState')
-        self.assertIn('glVertexPointer', seq)
-        self.assertIn('glColorPointer', seq)
-        self.assertEqual(seq[-2:], [
-            'glDisableClientState', 'glDisableClientState',
-        ])
-
-    def test_legacy_mode_uses_immediate_mode(self):
-        """legacy 路径保持逐顶点 glBegin/glColor4f/glVertex2f 提交。"""
-        bodies = self._bodies()
-        w = _make_widget(bodies, self.camera, render_mode='legacy')
-        recorder = GlRecorder()
-        with mock.patch.object(sw, 'gl', recorder):
-            w._draw_trails()
-
-        total_points = sum(len(b.trail) for b in bodies if len(b.trail) >= 2)
-        self.assertEqual(len(recorder.named('glBegin')), 3)
-        self.assertEqual(len(recorder.named('glEnd')), 3)
-        self.assertEqual(len(recorder.named('glColor4f')), total_points)
-        self.assertEqual(len(recorder.named('glVertex2f')), total_points)
-        self.assertEqual(recorder.named('glDrawArrays'), [])
-        self.assertEqual(recorder.named('glVertexPointer'), [])
-
-    def test_batch_short_trails_skipped(self):
-        """0 / 1 点轨迹：batch 不产生任何 GL 调用。"""
+    def test_short_trails_skipped(self):
         bodies = [
             _make_body('a', [np.zeros(2, dtype=np.float64)] * 0),
             _make_body('b', [np.zeros(2, dtype=np.float64)]),
         ]
+        r = self._renderer()
+        with mock.patch.object(tr, 'gl', self.recorder):
+            n, k = r.render(bodies, self.camera)
+        self.assertEqual((n, k), (0, 0))
+        self.assertEqual(self.recorder.named('glBufferData'), [])
+        self.assertEqual(self.recorder.named('glBufferSubData'), [])
+        self.assertEqual(self.recorder.named('glDrawArrays'), [])
+
+    def test_widget_vbo_path(self):
+        bodies = _bodies()
         w = _make_widget(bodies, self.camera)
-        recorder = GlRecorder()
-        with mock.patch.object(sw, 'gl', recorder):
+        with mock.patch.object(sw, 'gl', self.recorder), mock.patch.object(tr, 'gl', self.recorder):
+            w._trail_renderer.initialize()
             w._draw_trails()
-        self.assertEqual(recorder.calls, [])
+            w._draw_trails()  # 第二帧走 glBufferSubData
+        self.assertEqual(len(self.recorder.named('glDrawArrays')), 6)
+        self.assertEqual(len(self.recorder.named('glBufferData')), 1)
+        self.assertEqual(len(self.recorder.named('glBufferSubData')), 1)
+        self.assertEqual(self.recorder.named('glBegin'), [])
+        self.assertEqual(self.recorder.named('glVertex2f'), [])
+
+    def test_widget_old_path(self):
+        bodies = _bodies()
+        w = _make_widget(bodies, self.camera, old_renderer=True)
+        with mock.patch.object(sw, 'gl', self.recorder):
+            w._draw_trails()
+        total = sum(len(b.trail) for b in bodies if len(b.trail) >= 2)
+        self.assertEqual(len(self.recorder.named('glBegin')), 3)
+        self.assertEqual(len(self.recorder.named('glEnd')), 3)
+        self.assertEqual(len(self.recorder.named('glColor4f')), total)
+        self.assertEqual(len(self.recorder.named('glVertex2f')), total)
+        self.assertEqual(self.recorder.named('glDrawArrays'), [])
 
     def test_sampling_limit_sync(self):
-        """trail_render_sampling 运行时变更后，batch 路径重建 builder。"""
         rng = np.random.default_rng(5)
         body = _make_body('b', rng.uniform(-1.0, 1.0, (1200, 2)))
         w = _make_widget([body], self.camera, sampling=1000)
         w.trail_render_sampling = 500
-        recorder = GlRecorder()
-        with mock.patch.object(sw, 'gl', recorder):
+        with mock.patch.object(sw, 'gl', self.recorder), mock.patch.object(tr, 'gl', self.recorder):
+            w._trail_renderer.initialize()
             w._draw_trails()
-        self.assertEqual(w._trail_builder.sampling_limit, 500)
-        draws = recorder.named('glDrawArrays')
+        self.assertEqual(w._trail_renderer.sampling_limit, 500)
+        draws = self.recorder.named('glDrawArrays')
         self.assertEqual(len(draws), 1)
         self.assertEqual(draws[0][2], 500)
 
-    def test_phase_timer_keys(self):
-        """batch 路径仍输出 trail_prepare / trail_upload_draw 阶段键。"""
-        bodies = self._bodies()
-        w = _make_widget(bodies, self.camera)
-        timer = sw.RenderPhaseTimer()
-        w._render_phase_timer = timer
-        recorder = GlRecorder()
-        with mock.patch.object(sw, 'gl', recorder):
-            w._draw_trails()
-        self.assertIn('trail_prepare', timer.phases)
-        self.assertIn('trail_upload_draw', timer.phases)
-
-    def test_set_trail_render_mode(self):
+    def test_set_old_trail_renderer(self):
         w = _make_widget([], self.camera)
-        w.set_trail_render_mode('legacy')
-        self.assertEqual(w._trail_render_mode, 'legacy')
-        w.set_trail_render_mode('batch')
-        self.assertEqual(w._trail_render_mode, 'batch')
-        w.set_trail_render_mode('whatever')
-        self.assertEqual(w._trail_render_mode, 'batch')
-        w.set_trail_render_mode(None)
-        self.assertEqual(w._trail_render_mode, 'batch')
+        w.set_old_trail_renderer(True)
+        self.assertTrue(w.old_trail_renderer)
+        w.set_old_trail_renderer(False)
+        self.assertFalse(w.old_trail_renderer)
 
 
 if __name__ == '__main__':
