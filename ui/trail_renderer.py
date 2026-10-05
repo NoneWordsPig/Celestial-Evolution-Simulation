@@ -19,11 +19,13 @@ Trail 渲染数据层 + VBO 批量渲染器
 本模块不修改 physics 与 trail 数据结构。
 """
 
-import ctypes
 import time
 
 import numpy as np
 import OpenGL.GL as gl
+
+from .gl_buffers import ColoredVertexBuffer
+from .render_coordinates import world_to_ndc
 
 
 class TrailVertexBuilder:
@@ -33,7 +35,7 @@ class TrailVertexBuilder:
         bodies : 可迭代对象，每个元素需具备：
                  trail  : deque of np.ndarray (2,) float64（世界坐标，DU）
                  color  : np.ndarray (3,) float32（归一化 RGB，0-1）
-        camera : center_x / center_y / zoom / viewport_width / viewport_height
+        camera : world_to_screen / center_x / center_y / zoom / viewport dimensions
 
     输出：
         vertices : (N, 6) float32 —— interleaved [x, y, r, g, b, a]
@@ -56,9 +58,13 @@ class TrailVertexBuilder:
             n = len(body.trail)
             if n < 2:
                 continue
-            arr = np.asarray(body.trail, dtype=np.float64)
             if n > self.sampling_limit:
-                arr = arr[self._sample_indices(n, self.sampling_limit)]
+                # Convert only sampled points; deque indexing in a loop is O(n*k).
+                history = list(body.trail)
+                points = [history[i] for i in self._sample_indices(n, self.sampling_limit)]
+            else:
+                points = body.trail
+            arr = np.asarray(points, dtype=np.float64)
             if len(arr) < 2:
                 continue
             prepared.append((arr, body.color))
@@ -68,14 +74,12 @@ class TrailVertexBuilder:
         starts = np.empty(len(prepared), dtype=np.int64)
         counts = np.empty(len(prepared), dtype=np.int64)
 
-        w = camera.viewport_width
-        h = camera.viewport_height
         offset = 0
         for i, (arr, color) in enumerate(prepared):
             m = len(arr)
             starts[i] = offset
             counts[i] = m
-            self._fill_block(vertices[offset:offset + m], arr, color, camera, w, h)
+            self._fill_block(vertices[offset:offset + m], arr, color, camera)
             offset += m
         return vertices, starts, counts
 
@@ -89,24 +93,21 @@ class TrailVertexBuilder:
         return indices[::-1]
 
     @staticmethod
-    def _fill_block(block: np.ndarray, arr: np.ndarray, color, camera, w, h) -> None:
+    def _fill_block(block: np.ndarray, arr: np.ndarray, color, camera) -> None:
         """将单个 body 的采样轨迹写入 interleaved 顶点块。
 
         全部通过 numpy 列赋值完成（slicing + broadcasting），无逐顶点循环。
         """
-        ndc_x = ((arr[:, 0] - camera.center_x) * camera.zoom + w * 0.5) / w * 2.0 - 1.0
-        ndc_y = 1.0 - (-(arr[:, 1] - camera.center_y) * camera.zoom + h * 0.5) / h * 2.0
         alphas = 0.15 + 0.65 * np.linspace(0.0, 1.0, len(arr))
 
-        block[:, 0] = ndc_x
-        block[:, 1] = ndc_y
+        block[:, :2] = world_to_ndc(arr, camera)
         block[:, 2] = color[0]
         block[:, 3] = color[1]
         block[:, 4] = color[2]
         block[:, 5] = alphas
 
 
-class TrailRenderer:
+class TrailRenderer(ColoredVertexBuffer):
     """VBO 批量渲染器（第二阶段：替换 immediate mode 逐顶点提交）。
 
     职责：
@@ -118,9 +119,11 @@ class TrailRenderer:
     """
 
     def __init__(self, sampling_limit: int = 1000) -> None:
+        super().__init__()
         self.builder = TrailVertexBuilder(sampling_limit)
-        self._vbo = None
-        self._capacity_bytes = 0
+        self._cache_key = None
+        self._cache_sources = ()
+        self._cached_draw = None
 
     @property
     def sampling_limit(self) -> int:
@@ -131,28 +134,16 @@ class TrailRenderer:
         self.builder.sampling_limit = int(value)
 
     @property
-    def vbo(self):
-        """当前 VBO id（未初始化或已清理时为 None）。"""
-        return self._vbo
+    def gl(self):
+        return gl
 
-    def initialize(self) -> None:
-        """在 GL 上下文就绪时创建 VBO（防重复；会先清理旧对象）。"""
-        self.cleanup()
-        ids = gl.glGenBuffers(1)
-        self._vbo = int(ids[0]) if not isinstance(ids, (int, np.integer)) else int(ids)
-        self._capacity_bytes = 0
+    def cleanup(self):
+        super().cleanup()
+        self._cache_key = None
+        self._cache_sources = ()
+        self._cached_draw = None
 
-    def cleanup(self) -> None:
-        """删除 VBO（上下文销毁时驱动也会回收，这里尽力清理）。"""
-        if self._vbo is not None:
-            try:
-                gl.glDeleteBuffers(1, [self._vbo])
-            except Exception:  # pragma: no cover - 上下文已销毁时忽略
-                pass
-            self._vbo = None
-        self._capacity_bytes = 0
-
-    def render(self, bodies, camera, phase=None, line_width: float = 1.5):
+    def render(self, bodies, camera, phase=None, line_width: float = 1.5, revision=None):
         """每帧渲染：trail data -> numpy 顶点 -> glBufferSubData -> 每 body 一次 glDrawArrays。
 
         phase : 可选，提供 add(name, seconds)（如 RenderPhaseTimer），
@@ -161,12 +152,41 @@ class TrailRenderer:
         """
         if self._vbo is None:
             raise RuntimeError('TrailRenderer.initialize() 必须在有效 GL 上下文中先行调用')
+        # A caller-supplied revision permits reusing already uploaded vertices
+        # between physics ticks. With revision=None always rebuild, preserving
+        # the public renderer's support for arbitrarily mutable input arrays.
+        key = None
+        if revision is not None:
+            bodies = tuple(bodies)
+            sources = tuple(
+                (body, body.trail[0], body.trail[-1]) if body.trail else (body,)
+                for body in bodies
+            )
+            key = (
+                revision, self.sampling_limit,
+                camera.center_x, camera.center_y, camera.zoom,
+                camera.viewport_width, camera.viewport_height,
+                tuple((id(b), id(b.trail), len(b.trail),
+                       id(b.trail[0]) if b.trail else None,
+                       id(b.trail[-1]) if b.trail else None, tuple(b.color)) for b in bodies),
+            )
+            if key == self._cache_key:
+                starts, counts, result = self._cached_draw
+                t0 = time.perf_counter() if phase is not None else None
+                if result[0]:
+                    self._draw(starts, counts, line_width)
+                if phase is not None:
+                    phase.add('trail_draw', time.perf_counter() - t0)
+                return result
         if phase is not None:
             t0 = time.perf_counter()
         vertices, starts, counts = self.builder.build(bodies, camera)
         if phase is not None:
             phase.add('trail_prepare', time.perf_counter() - t0)
         if vertices.size == 0:
+            self._cache_key = key
+            self._cache_sources = sources if key is not None else ()
+            self._cached_draw = (starts, counts, (0, 0))
             return 0, 0
         if phase is not None:
             t1 = time.perf_counter()
@@ -177,33 +197,11 @@ class TrailRenderer:
         self._draw(starts, counts, line_width)
         if phase is not None:
             phase.add('trail_draw', time.perf_counter() - t2)
-        return int(vertices.shape[0]), int(len(starts))
-
-    def _upload(self, vertices: np.ndarray) -> None:
-        """VBO 上传：容量不足时 glBufferData 扩容，否则每帧 glBufferSubData。"""
-        nbytes = vertices.nbytes
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._vbo)
-        if nbytes > self._capacity_bytes:
-            gl.glBufferData(
-                gl.GL_ARRAY_BUFFER, nbytes, vertices, gl.GL_DYNAMIC_DRAW
-            )
-            self._capacity_bytes = nbytes
-        else:
-            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, nbytes, vertices)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+        result = int(vertices.shape[0]), int(len(starts))
+        self._cache_key = key
+        self._cache_sources = sources if key is not None else ()
+        self._cached_draw = (starts, counts, result)
+        return result
 
     def _draw(self, starts, counts, line_width: float) -> None:
-        """client arrays 指向已绑定 VBO（offset 为字节偏移），每 body 一条 GL_LINE_STRIP。"""
-        gl.glLineWidth(line_width)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._vbo)
-        gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
-        gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-        try:
-            gl.glVertexPointer(2, gl.GL_FLOAT, 24, ctypes.c_void_p(0))
-            gl.glColorPointer(4, gl.GL_FLOAT, 24, ctypes.c_void_p(8))
-            for start, count in zip(starts, counts):
-                gl.glDrawArrays(gl.GL_LINE_STRIP, int(start), int(count))
-        finally:
-            gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
-            gl.glDisableClientState(gl.GL_COLOR_ARRAY)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+        self._draw_arrays(gl.GL_LINE_STRIP, starts, counts, line_width)

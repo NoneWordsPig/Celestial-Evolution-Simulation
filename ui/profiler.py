@@ -16,7 +16,7 @@
   Physics / UI callbacks / Render Wall，避免重复计入。
 - 等待时间（GPU Wait、Qt 空闲、OS 调度）一律不计入 Physics 或 Render CPU。
 
-每帧输出（由 SimulationWidget 动画 tick 驱动）：
+每帧输出（由 SimulationWidget 实际绘制驱动）：
     profiler = FrameProfiler(engine, reference_frame)
     profiler.attach()               # engine.set_timing(profiler)
     profiler.frame_start()          # 结束上一帧、开始新一帧
@@ -78,7 +78,7 @@ class FrameProfiler:
         engine,
         reference_frame=None,
         history_frames: int = 60,
-        target_fps: float = 30.0,
+        target_fps: float = 60.0,
     ):
         self.engine = engine
         self.reference_frame = reference_frame  # 保留参数兼容（当前未使用）
@@ -241,7 +241,7 @@ class FrameProfiler:
         self._frame_listener = listener
 
     # ------------------------------------------------------------
-    # 帧驱动（由 SimulationWidget 动画 tick 调用）
+    # 帧驱动（由 SimulationWidget 实际绘制调用）
     # ------------------------------------------------------------
 
     def frame_start(self) -> None:
@@ -505,8 +505,6 @@ class PerformanceLogger:
                 f"{render_cpu:.3f} {gpu_wait:.3f} {render_wall:.3f} "
                 f"{qt:.3f} {unaccounted:.3f}\n"
             )
-            self._file.flush()
-
         if now - self._last_stats_at >= 1.0:
             self._last_stats_at = now
             self._print_stats(now)

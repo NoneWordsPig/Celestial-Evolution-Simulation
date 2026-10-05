@@ -36,6 +36,7 @@ DEFAULT_UNITS = {
 _INTEGRATOR_KEYS = {
     'VelocityVerletIntegrator': 'verlet',
     'RK4Integrator': 'rk4',
+    'RK4IntegratorOpt': 'rk4',
 }
 
 

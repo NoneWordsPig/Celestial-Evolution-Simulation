@@ -68,10 +68,10 @@ def _old_vertex_buffer(body, camera, sampling_limit: int = 1000):
 # 测试辅助
 # ---------------------------------------------------------------------------
 
-def _make_body(name: str, points, color=(0.9, 0.4, 0.2)):
+def _make_body(name: str, points, color=(0.9, 0.4, 0.2), maxlen=1000):
     """构造最小可用 body（仅 trail + color，与渲染器解耦）。"""
     trail = deque(
-        (np.asarray(p, dtype=np.float64) for p in points), maxlen=1000
+        (np.asarray(p, dtype=np.float64) for p in points), maxlen=maxlen
     )
     return SimpleNamespace(
         name=name,
@@ -133,7 +133,7 @@ class TestTrailVertexBuilder(unittest.TestCase):
     def test_sampling_above_limit(self):
         for n in (1001, 1250, 1500, 2500, 4096):
             rng = np.random.default_rng(n)
-            body = _make_body('b', rng.uniform(-1e4, 1e4, (n, 2)))
+            body = _make_body('b', rng.uniform(-1e4, 1e4, (n, 2)), maxlen=n)
             self._assert_same(body)
 
     def test_sampling_indices_match(self):

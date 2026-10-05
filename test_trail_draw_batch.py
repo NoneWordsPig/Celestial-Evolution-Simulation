@@ -77,6 +77,7 @@ def _make_widget(bodies, camera, old_renderer=False, sampling=1000):
     w._trail_renderer = TrailRenderer(sampling)
     w._render_phase_timer = None
     w._cpu_profiler = None
+    w._trail_revision = None  # Exercise the uncached upload path in these tests.
     return w
 
 
@@ -257,6 +258,42 @@ class TestTrailRenderer(unittest.TestCase):
         self.assertTrue(w.old_trail_renderer)
         w.set_old_trail_renderer(False)
         self.assertFalse(w.old_trail_renderer)
+
+    def test_revision_reuses_upload_and_invalidates_for_camera_and_color(self):
+        bodies = _bodies()
+        r = self._renderer()
+        with mock.patch.object(tr, 'gl', self.recorder):
+            with mock.patch.object(r.builder, 'build', wraps=r.builder.build) as build:
+                r.render(bodies, self.camera, revision=0)
+                r.render(bodies, self.camera, revision=0)
+                self.assertEqual(build.call_count, 1)
+                self.camera.center_x += 1
+                r.render(bodies, self.camera, revision=0)
+                bodies[0].color[0] = 0.2
+                r.render(bodies, self.camera, revision=0)
+                r.render(bodies, self.camera, revision=1)
+                self.assertEqual(build.call_count, 4)
+        self.assertEqual(len(self.recorder.named('glBufferData')), 1)
+        self.assertEqual(len(self.recorder.named('glBufferSubData')), 3)
+        self.assertEqual(len(self.recorder.named('glDrawArrays')), 15)
+
+    def test_full_deque_append_invalidates_even_without_revision_change(self):
+        bodies = _bodies()
+        r = self._renderer()
+        with mock.patch.object(tr, 'gl', self.recorder):
+            r.render(bodies, self.camera, revision=0)
+            bodies[1].trail.append(np.array([5.0, 6.0]))
+            r.render(bodies, self.camera, revision=0)
+        self.assertEqual(len(self.recorder.named('glBufferSubData')), 1)
+
+    def test_reinitialization_discards_uploaded_cache(self):
+        r = self._renderer()
+        bodies = _bodies()
+        with mock.patch.object(tr, 'gl', self.recorder):
+            r.render(bodies, self.camera, revision=0)
+            r.initialize()
+            r.render(bodies, self.camera, revision=0)
+        self.assertEqual(len(self.recorder.named('glBufferData')), 2)
 
 
 if __name__ == '__main__':

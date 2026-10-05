@@ -13,9 +13,8 @@ from typing import List, Optional
 from .body import Body
 from .gravity import GravitySolver
 from .gravity_opt import GravitySolverOpt
-from .integrator_opt import RK4IntegratorOpt
 from .collision import CollisionHandler
-from .integrator import VelocityVerletIntegrator, RK4Integrator, IntegratorFactory
+from .integrator import VelocityVerletIntegrator, IntegratorFactory
 from .constants import (
     G, SOFTENING, DEFAULT_DT, MAX_TRAJECTORY_LENGTH,
     BASE_SIMULATION_RATE, MAX_SUBSTEPS_PER_FRAME,
@@ -53,19 +52,15 @@ class PhysicsEngine:
             dt: 基础时间步长
             time_scale: 时间倍率（1.0 = 正常速度）
         """
-                # 物理组件
+        # 物理组件
         if use_optimized:
             self.gravity_solver = GravitySolverOpt(
                 softening=softening, 
                 use_gpu=use_gpu, 
                 )
-            if integrator_type == 'rk4':
-                self.integrator = RK4IntegratorOpt(self.gravity_solver)
-            else:
-                self.integrator = IntegratorFactory.create(integrator_type, self.gravity_solver)
         else:
             self.gravity_solver = GravitySolver(softening=softening)
-            self.integrator = IntegratorFactory.create(integrator_type, self.gravity_solver)
+        self.integrator = IntegratorFactory.create(integrator_type, self.gravity_solver)
         self.collision_handler = CollisionHandler()
         # 可选计时钩子（None = 关闭，无额外开销）；不参与任何数值计算
         self._timing = None

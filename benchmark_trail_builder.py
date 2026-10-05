@@ -30,7 +30,7 @@ _BUILDER = TrailVertexBuilder()
 def _make_body(name: str, n: int, rng, color):
     pts = rng.uniform(-1e4, 1e4, (n, 2))
     trail = deque(
-        (np.asarray(p, dtype=np.float64) for p in pts), maxlen=1000
+        (np.asarray(p, dtype=np.float64) for p in pts), maxlen=n
     )
     return SimpleNamespace(name=name, color=np.asarray(color, dtype=np.float32), trail=trail)
 

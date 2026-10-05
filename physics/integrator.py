@@ -97,47 +97,40 @@ class RK4Integrator:
             bodies: 天体列表
             dt: 时间步长
         """
-        n = len(bodies)
-        if n == 0:
+        if not bodies:
             return
-        
-        # 保存初始状态
-        initial_positions = np.array([b.position.copy() for b in bodies])
-        initial_velocities = np.array([b.velocity.copy() for b in bodies])
-        
-        # k1: 在 t 时刻的导数
+        # Independent float64 snapshots; calculate all bodies in each stage at once.
+        positions = np.array([b.position for b in bodies], dtype=np.float64)
+        velocities = np.array([b.velocity for b in bodies], dtype=np.float64)
+        half_dt = 0.5 * dt
+
+        k1_v = velocities
         k1_acc = self.gravity_solver.compute_accelerations(bodies)
-        k1_v = np.array([b.velocity.copy() for b in bodies])
-        
-        # k2: 在 t + dt/2 时刻的导数（使用 k1 预测）
-        for i, body in enumerate(bodies):
-            body.position = initial_positions[i] + 0.5 * dt * k1_v[i]
-            body.velocity = initial_velocities[i] + 0.5 * dt * k1_acc[i]
+
+        k2_v = velocities + half_dt * k1_acc
+        self._assign_state(bodies, positions + half_dt * k1_v, k2_v)
         k2_acc = self.gravity_solver.compute_accelerations(bodies)
-        k2_v = np.array([b.velocity.copy() for b in bodies])
-        
-        # k3: 在 t + dt/2 时刻的导数（使用 k2 预测）
-        for i, body in enumerate(bodies):
-            body.position = initial_positions[i] + 0.5 * dt * k2_v[i]
-            body.velocity = initial_velocities[i] + 0.5 * dt * k2_acc[i]
+
+        k3_v = velocities + half_dt * k2_acc
+        self._assign_state(bodies, positions + half_dt * k2_v, k3_v)
         k3_acc = self.gravity_solver.compute_accelerations(bodies)
-        k3_v = np.array([b.velocity.copy() for b in bodies])
-        
-        # k4: 在 t + dt 时刻的导数（使用 k3 预测）
-        for i, body in enumerate(bodies):
-            body.position = initial_positions[i] + dt * k3_v[i]
-            body.velocity = initial_velocities[i] + dt * k3_acc[i]
+
+        k4_v = velocities + dt * k3_acc
+        self._assign_state(bodies, positions + dt * k3_v, k4_v)
         k4_acc = self.gravity_solver.compute_accelerations(bodies)
-        k4_v = np.array([b.velocity.copy() for b in bodies])
-        
-        # 加权平均更新
-        for i, body in enumerate(bodies):
-            body.position = initial_positions[i] + (dt / 6.0) * (
-                k1_v[i] + 2 * k2_v[i] + 2 * k3_v[i] + k4_v[i]
-            )
-            body.velocity = initial_velocities[i] + (dt / 6.0) * (
-                k1_acc[i] + 2 * k2_acc[i] + 2 * k3_acc[i] + k4_acc[i]
-            )
+
+        self._assign_state(
+            bodies,
+            positions + (dt / 6.0) * (k1_v + 2 * k2_v + 2 * k3_v + k4_v),
+            velocities + (dt / 6.0) * (k1_acc + 2 * k2_acc + 2 * k3_acc + k4_acc),
+        )
+
+    @staticmethod
+    def _assign_state(bodies, positions, velocities):
+        """Publish one complete RK4 stage, without per-body arithmetic/copies."""
+        for body, position, velocity in zip(bodies, positions, velocities):
+            body.position = position
+            body.velocity = velocity
 
 
 class IntegratorFactory:
@@ -162,6 +155,11 @@ class IntegratorFactory:
         if integrator_type.lower() == 'verlet':
             return VelocityVerletIntegrator(gravity_solver)
         elif integrator_type.lower() == 'rk4':
+            # Keep engine construction and scene loading on the same factory path.
+            from .gravity_opt import GravitySolverOpt
+            from .integrator_opt import RK4IntegratorOpt
+            if isinstance(gravity_solver, GravitySolverOpt):
+                return RK4IntegratorOpt(gravity_solver)
             return RK4Integrator(gravity_solver)
         else:
             raise ValueError(f"Unknown integrator type: {integrator_type}")

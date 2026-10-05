@@ -423,7 +423,7 @@ of 60 frames.
 
 | Environment variable | Default | Description |
 | --- | --- | --- |
-| `PERF_LOG` | `1` | Set to `0` to disable the per-frame performance log. |
+| `PERF_LOG` | `0` | Set to `1` to enable per-frame logging; the file is flushed once per second. |
 | `PERF_LOG_PATH` | `<project>/logs/performance.log` | Where the per-frame log is written. |
 
 The performance log writes one line per frame; every second it aggregates

@@ -341,6 +341,8 @@ def _install_call_counters():
     for name in (
         'glClear', 'glColor4f', 'glVertex2f', 'glBegin', 'glEnd',
         'glLineWidth', 'glBindBuffer', 'glBufferData', 'glBufferSubData',
+        'glDrawArrays', 'glEnableClientState', 'glDisableClientState',
+        'glVertexPointer', 'glColorPointer',
         'glGenBuffers', 'glDeleteBuffers', 'glGenVertexArrays',
         'glCreateShader', 'glCreateProgram', 'glUseProgram',
         'glGenTextures', 'glUniform1f', 'glUniform4f',

@@ -1,0 +1,135 @@
+[done] mode=before speed=0.1 round=0 frames=110 paints=321 trail=3.963ms
+[done] mode=before speed=0.1 round=1 frames=106 paints=313 trail=4.004ms
+[done] mode=before speed=1 round=0 frames=106 paints=136 trail=23.422ms
+[done] mode=before speed=1 round=1 frames=106 paints=140 trail=23.131ms
+[done] mode=before speed=2 round=0 frames=82 paints=91 trail=28.008ms
+[done] mode=before speed=2 round=1 frames=104 paints=114 trail=24.688ms
+[done] mode=before speed=5 round=0 frames=45 paints=48 trail=26.343ms
+[done] mode=before speed=5 round=1 frames=48 paints=52 trail=25.061ms
+[done] mode=before speed=10 round=0 frames=38 paints=46 trail=24.861ms
+[done] mode=before speed=10 round=1 frames=39 paints=43 trail=25.368ms
+[done] mode=after speed=0.1 round=0 frames=107 paints=313 trail=1.168ms
+[done] mode=after speed=0.1 round=1 frames=110 paints=322 trail=1.158ms
+[done] mode=after speed=1 round=0 frames=107 paints=313 trail=3.147ms
+[done] mode=after speed=1 round=1 frames=110 paints=322 trail=3.083ms
+[done] mode=after speed=2 round=0 frames=110 paints=303 trail=3.555ms
+[done] mode=after speed=2 round=1 frames=110 paints=301 trail=3.407ms
+[done] mode=after speed=5 round=0 frames=64 paints=141 trail=3.303ms
+[done] mode=after speed=5 round=1 frames=57 paints=140 trail=3.228ms
+[done] mode=after speed=10 round=0 frames=41 paints=89 trail=3.542ms
+[done] mode=after speed=10 round=1 frames=38 paints=98 trail=3.609ms
+--- 0.1x ---
+module                before(ms)   after(ms)   speedup
+Frame total               46.865      46.958     1.00x
+Qt dispatch                2.628       2.298     1.14x
+paintGL total             22.843      14.807     1.54x
+physics                    1.056       1.077     0.98x
+trail total                3.963       1.168     3.39x
+  trail prepare            0.408       0.782     0.52x
+  trail upload             0.378       0.116     3.26x
+  trail draw               3.177       0.271    11.73x
+body prepare               0.054       0.053     1.03x
+body draw                  1.193       1.215     0.98x
+QPainter overlay           1.668       1.628     1.02x
+GPU timer                  2.139       2.503     0.85x
+GPU wait                   0.000       0.000      infx
+swap+submit(CPU)           1.009       1.033     0.98x
+GL calls/paint          1538.286     683.000     2.25x
+
+--- 1x ---
+module                before(ms)   after(ms)   speedup
+Frame total               47.262      46.909     1.01x
+Qt dispatch                3.593       3.049     1.18x
+paintGL total             35.347      20.502     1.72x
+physics                    7.554       7.499     1.01x
+trail total               23.422       3.147     7.44x
+  trail prepare            2.666       2.727     0.98x
+  trail upload             0.606       0.142     4.26x
+  trail draw              20.149       0.277    72.72x
+body prepare               0.052       0.054     0.98x
+body draw                  1.209       1.210     1.00x
+QPainter overlay           1.691       1.701     0.99x
+GPU timer                  2.072       6.638     0.31x
+GPU wait                   0.000       0.000      infx
+swap+submit(CPU)           0.394       0.971     0.41x
+GL calls/paint          7926.000     683.000    11.60x
+
+--- 2x ---
+module                before(ms)   after(ms)   speedup
+Frame total               61.279      46.842     1.31x
+Qt dispatch                4.510       3.480     1.30x
+paintGL total             35.897      20.471     1.75x
+physics                   19.761      14.473     1.37x
+trail total               28.008       3.555     7.88x
+  trail prepare            3.296       3.125     1.05x
+  trail upload             0.736       0.156     4.72x
+  trail draw              23.976       0.275    87.24x
+body prepare               0.053       0.053     1.01x
+body draw                  1.241       1.216     1.02x
+QPainter overlay           1.751       1.692     1.04x
+GPU timer                  2.470       4.682     0.53x
+GPU wait                   0.000       0.000      infx
+swap+submit(CPU)           0.474       1.413     0.34x
+GL calls/paint         13870.412     683.000    20.31x
+
+--- 5x ---
+module                before(ms)   after(ms)   speedup
+Frame total              112.110      81.241     1.38x
+Qt dispatch                5.300       3.949     1.34x
+paintGL total             32.611      15.671     2.08x
+physics                   72.399      54.794     1.32x
+trail total               26.343       3.303     7.97x
+  trail prepare            3.146       2.914     1.08x
+  trail upload             0.678       0.140     4.85x
+  trail draw              22.519       0.250    90.18x
+body prepare               0.054       0.050     1.08x
+body draw                  1.165       1.143     1.02x
+QPainter overlay           1.838       1.653     1.11x
+GPU timer                  1.969       4.794     0.41x
+GPU wait                   0.000       0.000      infx
+swap+submit(CPU)           0.486       0.859     0.57x
+GL calls/paint         18542.000     683.000    27.15x
+
+--- 10x ---
+module                before(ms)   after(ms)   speedup
+Frame total              131.646     121.469     1.08x
+Qt dispatch                4.911       6.537     0.75x
+paintGL total             35.135      16.196     2.17x
+physics                   90.378      93.235     0.97x
+trail total               24.861       3.542     7.02x
+  trail prepare            2.797       3.113     0.90x
+  trail upload             0.543       0.155     3.50x
+  trail draw              21.521       0.275    78.30x
+body prepare               0.050       0.071     0.71x
+body draw                  1.217       1.190     1.02x
+QPainter overlay           1.722       1.691     1.02x
+GPU timer                  3.573       6.861     0.52x
+GPU wait                   0.000       0.000      infx
+swap+submit(CPU)           0.501       0.805     0.62x
+GL calls/paint         18435.857     683.000    26.99x
+
+=== �Ż�ǰ vs �Ż��󣨸�������λ����===
+ģ��                    before(ms)   after(ms)   speedup
+Frame total               54.804      46.934     1.17x
+Qt dispatch                4.052       3.545     1.14x
+paintGL total             32.715      18.473     1.77x
+physics                   16.577      14.172     1.17x
+trail total               24.774       3.266     7.59x
+  trail prepare            2.817       2.868     0.98x
+  trail upload             0.569       0.142     4.00x
+  trail draw              21.392       0.271    78.93x
+body prepare               0.052       0.053     0.99x
+body draw                  1.184       1.197     0.99x
+QPainter overlay           1.706       1.662     1.03x
+GPU timer                  2.105       4.738     0.44x
+GPU wait                   0.000       0.000      infx
+swap+submit(CPU)           0.463       0.974     0.48x
+GL calls/paint         13870.412     683.000    20.31x
+
+=== trail total �����ʣ�ms/paint��===
+    x     before      after   speedup
+  0.1      3.984      1.163     3.42x
+    1     23.277      3.115     7.47x
+    2     26.348      3.481     7.57x
+    5     25.702      3.266     7.87x
+   10     25.115      3.576     7.02x

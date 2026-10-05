@@ -1,0 +1,17 @@
+[done] mode=before speed=0.1 round=0 frames=110 paints=322 trail=4.536ms
+[done] mode=before speed=0.1 round=1 frames=110 paints=322 trail=4.682ms
+[done] mode=before speed=1 round=0 frames=107 paints=123 trail=26.552ms
+[done] mode=before speed=1 round=1 frames=104 paints=121 trail=26.685ms
+[done] mode=before speed=2 round=0 frames=76 paints=88 trail=29.795ms
+[done] mode=before speed=2 round=1 frames=78 paints=83 trail=31.239ms
+[done] mode=before speed=5 round=0 frames=43 paints=43 trail=29.240ms
+[done] mode=before speed=5 round=1 frames=42 paints=46 trail=29.020ms
+[done] mode=before speed=10 round=0 frames=35 paints=37 trail=29.293ms
+[done] mode=before speed=10 round=1 frames=35 paints=37 trail=29.690ms
+[done] mode=after speed=0.1 round=0 frames=110 paints=322 trail=1.147ms
+[done] mode=after speed=0.1 round=1 frames=110 paints=322 trail=1.164ms
+[done] mode=after speed=1 round=0 frames=110 paints=322 trail=3.454ms
+[done] mode=after speed=1 round=1 frames=110 paints=320 trail=3.511ms
+[done] mode=after speed=2 round=0 frames=110 paints=304 trail=3.655ms
+[done] mode=after speed=2 round=1 frames=107 paints=282 trail=3.677ms
+[done] mode=after speed=5 round=0 frames=54 paints=125 trail=3.373ms

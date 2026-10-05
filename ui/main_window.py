@@ -141,9 +141,12 @@ class MainWindow(QMainWindow):
         self.performance_logger = PerformanceLogger(
             self.profiler,
             path=log_path,
-            enabled=os.environ.get('PERF_LOG', '1') == '1',
+            enabled=os.environ.get('PERF_LOG', '0') == '1',
         )
         self.profiler.set_frame_listener(self.performance_logger.record)
+        app = ProfilingApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.performance_logger.close)
         
         # 应用样式
         self.setStyleSheet(PANEL_STYLE)
