@@ -4,6 +4,9 @@
 
 [English](README.md) | **简体中文**
 
+![Version](https://img.shields.io/badge/version-0.1-blue)
+[Windows x64 .exe](https://github.com/NoneWordsPig/Celestial-Evolution-Simulation/releases/download/v0.1/CelestialEvolutionSimulation-0.1-windows-x64.exe) · [Release 0.1](https://github.com/NoneWordsPig/Celestial-Evolution-Simulation/releases/tag/v0.1)
+
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB)
 ![GUI](https://img.shields.io/badge/GUI-PyQt6-41B883)
 ![Integrator](https://img.shields.io/badge/Integrator-RK4%20%2F%20Velocity%20Verlet-6366F1)
@@ -59,14 +62,20 @@
 
 ## 截图
 
-<!--
-请将截图放入 `docs/screenshots/` 并在下面引用，例如：
-![主窗口](docs/screenshots/main.png)
--->
-
-目前未附带截图。你可以截取运行中的应用并放入 `docs/screenshots/` 目录后在此引用。
+![天体引力模拟器 0.1：太阳系场景](docs/screenshots/main.png)
 
 ## 安装
+
+### Windows 0.1（无需安装 Python）
+
+从 [GitHub Release 0.1](https://github.com/NoneWordsPig/Celestial-Evolution-Simulation/releases/tag/v0.1) 下载
+[`CelestialEvolutionSimulation-0.1-windows-x64.exe`](https://github.com/NoneWordsPig/Celestial-Evolution-Simulation/releases/download/v0.1/CelestialEvolutionSimulation-0.1-windows-x64.exe)，双击运行。
+程序包含 Python 运行环境、依赖和 9 个内置场景，需要 Windows x64 与支持 OpenGL 的显卡驱动。
+
+保存的场景位于 `%LOCALAPPDATA%\Celestial Evolution Simulation\scenes`，退出或替换 exe 后仍会保留。
+如需检查下载文件，可使用 Release 附带的 `SHA256SUMS.txt` 核对 SHA256。
+
+### 从源码运行
 
 环境要求：
 
@@ -86,6 +95,17 @@ numpy>=1.26
 PyQt6>=6.6
 PyOpenGL>=3.1
 ```
+
+### 构建 Windows exe
+
+构建命令、依赖和实际 exe 的验证方法见 [BUILDING.md](BUILDING.md)。
+
+```powershell
+python -m pip install -r requirements-build.txt
+python -m PyInstaller --noconfirm CelestialEvolutionSimulation.spec
+```
+
+输出位于 `dist/CelestialEvolutionSimulation-0.1-windows-x64.exe`。
 
 ## 快速开始
 
@@ -341,6 +361,16 @@ python main.py
 
 ## 性能分析
 
+### 0.1 的性能优化
+
+天体与轨迹使用共用 VBO 批量渲染，轨迹在物理更新之间复用缓冲。
+RK4 和 CPU 引力计算共用单一实现，RK4 中间状态使用 NumPy 批量计算；
+四阶段 RK4、float64、固定步长与 G=1 保持不变。FPS 统计来自实际绘制。
+
+本机太阳系九体基准中，5× 从约 45.5 FPS 提升到 62.6，10× 从约 29.8 提升到 62.0。
+连续 1000 步与原版本数值结果一致。测量条件与限制见 [优化验证报告](PERFORMANCE_OPTIMIZATION.md)。
+
+
 `ui/profiler.py` 通过运行时方法包装对运行中的应用进行插桩，不修改任何物理算法。统计使用 60 帧滚动窗口。
 
 | # | 阶段 | 统计内容 |
@@ -379,12 +409,15 @@ python -m unittest discover -v
 python -m unittest test_physics_units -v
 ```
 
-当前测试套件共 **197 项**，覆盖单位 / 换算、积分器、碰撞、摄像机 / 比例尺、格式化器、参考系与场景往返。全部通过。
+测试覆盖单位 / 换算、RK4 数值验证、碰撞、渲染、缓存、FPS 统计、摄像机 / 比例尺、格式化器、参考系、场景往返与打包数据路径。
 
 ## 项目结构
 
 ```text
 .
+├── app_metadata.py              # Version / application identity
+├── app_paths.py                 # Bundled resources / persistent user data
+├── CelestialEvolutionSimulation.spec # Windows exe build
 ├── main.py                      # 程序入口
 ├── requirements.txt             # Python 依赖
 ├── physics/                     # 物理引擎包（不依赖 UI）
@@ -405,6 +438,10 @@ python -m unittest test_physics_units -v
 │   └── transitions.py           #   摄像机 / 动量平滑过渡
 ├── ui/                          # PyQt6 桌面界面
 │   ├── main_window.py           #   主窗口、菜单、工具栏、状态栏
+│   ├── body_renderer.py         #   Batched body geometry
+│   ├── trail_renderer.py        #   Trail building / caching
+│   ├── gl_buffers.py            #   Shared OpenGL buffer lifecycle
+│   ├── render_coordinates.py    #   Shared Camera-based transform
 │   ├── simulation_widget.py     #   OpenGL 模拟视图 + 交互
 │   ├── body_list_widget.py      #   左侧天体列表
 │   ├── inspector_widget.py      #   右侧检查器
@@ -416,7 +453,7 @@ python -m unittest test_physics_units -v
 │   └── control_panel.py         #   旧版控制面板（主窗口未使用）
 ├── scenes/                      # JSON 场景（启动时自动扫描）
 ├── logs/performance.log         # 逐帧性能日志
-└── test_*.py                    # unittest 测试套件（197 项）
+└── test_*.py                    # unittest 测试套件
 ```
 
 > 说明：工作目录中的 `天体模拟器.html` 是旧版单文件浏览器原型，已被 git 忽略，不属于被跟踪的项目内容。

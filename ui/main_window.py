@@ -35,6 +35,8 @@ from .styles import apply_global_style, apply_button_style, PANEL_STYLE
 from physics.scene_manager import SceneManager
 from .toast import Toast
 from .profiler import FrameProfiler, ProfilingApplication, PerformanceLogger
+from app_metadata import VERSION
+from app_paths import data_directory
 
 
 # 速度滑杆范围（对数刻度）
@@ -135,7 +137,7 @@ class MainWindow(QMainWindow):
         log_path = Path(
             os.environ.get(
                 'PERF_LOG_PATH',
-                str(Path(__file__).resolve().parent.parent / 'logs' / 'performance.log'),
+                str(data_directory() / 'logs' / 'performance.log'),
             )
         )
         self.performance_logger = PerformanceLogger(
@@ -192,7 +194,7 @@ class MainWindow(QMainWindow):
     
     def _setup_ui(self):
         """设置 UI - 优化布局"""
-        self.setWindowTitle("天体引力模拟器")
+        self.setWindowTitle(f"天体引力模拟器 {VERSION}")
         self.setMinimumSize(1200, 800)
         
         # 中心部件
@@ -787,7 +789,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "关于",
-            "天体引力模拟器\n\n"
+            f"天体引力模拟器 {VERSION}\n\n"
             "基于 Physics Engine + PyQt6 + OpenGL\n\n"
             "功能：\n"
             "- 多体引力模拟\n"

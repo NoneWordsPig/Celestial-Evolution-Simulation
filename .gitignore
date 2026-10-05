@@ -1,4 +1,7 @@
 天体模拟器.html
 __pycache__/
 *.pyc
+build/
+dist/
+.venv-build/
 AGENTS.md

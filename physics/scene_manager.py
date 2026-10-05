@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 
 from .body import Body
 from .integrator import IntegratorFactory
+from app_paths import scene_directory
 
 
 FORMAT_VERSION = 1
@@ -51,10 +52,8 @@ class SceneManager:
     """
 
     def __init__(self, scenes_directory: Optional[str] = None):
-        # 默认 scenes/ 位于项目根目录
-        root = Path(__file__).resolve().parent.parent
         self.scenes_directory = (
-            Path(scenes_directory) if scenes_directory else root / 'scenes'
+            Path(scenes_directory) if scenes_directory else scene_directory()
         )
 
     # ============================================================

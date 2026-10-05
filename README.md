@@ -4,6 +4,9 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+![Version](https://img.shields.io/badge/version-0.1-blue)
+[Windows x64 .exe](https://github.com/NoneWordsPig/Celestial-Evolution-Simulation/releases/download/v0.1/CelestialEvolutionSimulation-0.1-windows-x64.exe) · [Release 0.1](https://github.com/NoneWordsPig/Celestial-Evolution-Simulation/releases/tag/v0.1)
+
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB)
 ![GUI](https://img.shields.io/badge/GUI-PyQt6-41B883)
 ![Integrator](https://img.shields.io/badge/Integrator-RK4%20%2F%20Velocity%20Verlet-6366F1)
@@ -75,15 +78,22 @@ and input in Scientific mode.
 
 ## Screenshots
 
-<!--
-Place screenshots in `docs/screenshots/` and reference them here, e.g.:
-![Main window](docs/screenshots/main.png)
--->
-
-Screenshots are not bundled yet. You can capture the running application and
-drop it into `docs/screenshots/` to include it here.
+![Celestial Evolution Simulation 0.1: solar-system scene](docs/screenshots/main.png)
 
 ## Installation
+
+### Windows 0.1 (no Python installation required)
+
+Download [`CelestialEvolutionSimulation-0.1-windows-x64.exe`](https://github.com/NoneWordsPig/Celestial-Evolution-Simulation/releases/download/v0.1/CelestialEvolutionSimulation-0.1-windows-x64.exe)
+from [GitHub Release 0.1](https://github.com/NoneWordsPig/Celestial-Evolution-Simulation/releases/tag/v0.1) and double-click it.
+The single-file application includes Python, its dependencies and 9 built-in scenes.
+It requires Windows x64 and an OpenGL-capable graphics driver.
+
+Saved scenes persist in `%LOCALAPPDATA%\Celestial Evolution Simulation\scenes`,
+including after the executable is replaced. Check the download against the
+release's `SHA256SUMS.txt` if needed.
+
+### Run from source
 
 Requirements:
 
@@ -103,6 +113,17 @@ numpy>=1.26
 PyQt6>=6.6
 PyOpenGL>=3.1
 ```
+
+### Build the Windows executable
+
+See [BUILDING.md](BUILDING.md) for build dependencies and executable validation.
+
+```powershell
+python -m pip install -r requirements-build.txt
+python -m PyInstaller --noconfirm CelestialEvolutionSimulation.spec
+```
+
+Output: `dist/CelestialEvolutionSimulation-0.1-windows-x64.exe`.
 
 ## Quick Start
 
@@ -402,6 +423,18 @@ plus aggregate quantities (`center_of_mass`, `total_momentum`,
 
 ## Performance Profiling
 
+### Performance improvements in 0.1
+
+Bodies and trails share a batched VBO renderer, and unchanged trails reuse uploaded buffers.
+RK4 and CPU gravity each have one shared implementation; RK4 stage calculations are batched
+with NumPy. The four-stage RK4 algorithm, float64, fixed timestep and G=1 are preserved.
+FPS is measured from actual paints.
+
+On the tested nine-body solar-system scene, 5× improved from about 45.5 to 62.6 FPS,
+and 10× from about 29.8 to 62.0 FPS. A 1000-step comparison matched the original numerical
+results. See the [validation report](PERFORMANCE_OPTIMIZATION.md) for conditions and limits.
+
+
 `ui/profiler.py` instruments the running application without changing any
 physics algorithm (runtime method wrapping). Statistics use a rolling window
 of 60 frames.
@@ -443,14 +476,17 @@ Run a single module:
 python -m unittest test_physics_units -v
 ```
 
-The suite currently contains **197 tests** covering units/conversion,
-integrators, collisions, camera/scale, formatters, reference frames and
-scene round-trips. All pass.
+Tests cover units/conversion, RK4 numerical validation, collisions, rendering,
+cache invalidation, FPS measurement, camera/scale, formatters, reference frames,
+scene round-trips and persistent packaged-app paths.
 
 ## Project Structure
 
 ```text
 .
+├── app_metadata.py              # Version / application identity
+├── app_paths.py                 # Bundled resources / persistent user data
+├── CelestialEvolutionSimulation.spec # Windows exe build
 ├── main.py                      # Application entry point
 ├── requirements.txt             # Python dependencies
 ├── physics/                     # Physics engine package (no UI dependency)
@@ -471,6 +507,10 @@ scene round-trips. All pass.
 │   └── transitions.py           #   Camera / momentum smooth transitions
 ├── ui/                          # PyQt6 desktop interface
 │   ├── main_window.py           #   Main window, menus, toolbar, status bar
+│   ├── body_renderer.py         #   Batched body geometry
+│   ├── trail_renderer.py        #   Trail building / caching
+│   ├── gl_buffers.py            #   Shared OpenGL buffer lifecycle
+│   ├── render_coordinates.py    #   Shared Camera-based transform
 │   ├── simulation_widget.py     #   OpenGL simulation view + interactions
 │   ├── body_list_widget.py      #   Left body list
 │   ├── inspector_widget.py      #   Right inspector
@@ -482,7 +522,7 @@ scene round-trips. All pass.
 │   └── control_panel.py         #   Legacy control panel (not used by main window)
 ├── scenes/                      # JSON scenes (auto-scanned at startup)
 ├── logs/performance.log         # Per-frame performance log
-└── test_*.py                    # unittest suite (197 tests)
+└── test_*.py                    # unittest suite
 ```
 
 > Note: `天体模拟器.html` in the working directory is a legacy single-file
